@@ -24,7 +24,7 @@ Probability tables (`is_match`, `is_rep*`, length, pos slot, align, literals), f
 
 Per symbol: decode `is_match[state][pos_state]`. Literal vs match/rep. Length/distance as in LZMA SDK. Copy from dictionary.
 
-Encoder: at each position prefer a repeat of length ≥ 2, else a new match ≥ 2 from a bounded backward search (lookback capped at 4096 even if `dict_size` is larger), else a literal. Always emit an end marker. One-shot encode writes the real unpacked size.
+Encoder: at each position prefer a repeat of length ≥ 2, else a new match ≥ 2 from a bounded backward search (lookback capped at 4096 even if `dict_size` is larger), else a literal. Always emit an end marker. One-shot encode writes the real unpacked size. LZMA2 reuses the same session across chunks: match length is capped at the remaining bytes of the current chunk so a match cannot cross a chunk boundary.
 
 ## Invariants
 
@@ -42,11 +42,11 @@ Bad properties byte; dict size 0 / over max; dict over `memlimit` **after** roun
 
 ## Test vectors
 
-Empty, `"a"`, `"hello lzma"`, 64-byte run, 256 mixed bytes — produced by this encoder and self-decoded. Additional `liblzma` FORMAT_ALONE vectors (unknown size, dict 4096) for the same payloads.
+Empty, `"a"`, `"hello lzma"`, 64-byte run, 256 mixed bytes — produced by this encoder and self-decoded. Additional `liblzma` FORMAT_ALONE vectors (unknown size, dict 4096) for the same payloads. Encode-side: CI dumps `.lzma` from this encoder and `xz -d --format=lzma` / Python `lzma.FORMAT_ALONE` must recover the plaintext.
 
 ## Compatibility notes
 
-Greedy encoding will not match `xz -6` bytes. Decoder alignment with `liblzma` is required when reference streams are available.
+Greedy encoding will not match `xz -6` bytes. Decoder alignment with `liblzma` is required when reference streams are available. Encoder output is checked by a reference decoder in CI (`scripts/diff_encode.py`).
 
 ## Open questions
 

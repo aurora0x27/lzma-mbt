@@ -49,7 +49,7 @@ Self-inverse bit strings in whitebox tests. No public bitstream format besides L
 
 ## Compatibility notes
 
-Must interoperate with `liblzma` LZMA streams, verified at M3 via decode of encoded files.
+Must interoperate with `liblzma` LZMA streams. Decoder-side vectors plus encode-side CI (`scripts/diff_encode.py`) cover this.
 
 ## Open questions
 

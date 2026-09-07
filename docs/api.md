@@ -558,7 +558,7 @@ fn decompress_chunks(chunks : Array[Bytes]) -> Bytes raise LzmaError {
 4. 一次性 LZMA_Alone 写真实未压缩大小。
 5. 错误按标签匹配；`String` 载荷不是稳定 API。
 6. 单 Stream `.xz` 在 Footer 之后不得有剩余字节；裸 LZMA2 在结束标记之后同样不得有剩余字节。
-7. `.xz` Index 记录必须与实际 Block 的 Unpadded Size / Uncompressed Size 一致；Block Header 里的 Compressed Size 与 Uncompressed Size（编码器两者都写）必须与 LZMA2 消费字节数 / 明文长度一致。VLI 禁止非最短编码。
+7. `.xz` 解码器接受 0..N 个 Block；Index 记录必须与各 Block 的 Unpadded Size / Uncompressed Size 逐条一致。编码器当前仍只写 1 个 Block。Block Header 里的 Compressed Size 与 Uncompressed Size（编码器两者都写）必须与 LZMA2 消费字节数 / 明文长度一致。VLI 禁止非最短编码。
 
 ---
 

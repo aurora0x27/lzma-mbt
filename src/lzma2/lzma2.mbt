@@ -63,6 +63,30 @@ fn write_uncompressed_chunk(w : @bit.Writer, chunk : BytesView) -> Unit {
 }
 
 ///|
+fn write_compressed_chunk(
+  w : @bit.Writer,
+  control_base : Int,
+  chunk_n : Int,
+  body : Bytes,
+  lc : Int,
+  lp : Int,
+  pb : Int,
+  with_props : Bool,
+) -> Unit {
+  let uncomp_m1 = chunk_n - 1
+  let comp_m1 = body.length() - 1
+  w.write_u8(u8(control_base | (uncomp_m1 >> 16)))
+  w.write_u8(u8((uncomp_m1 >> 8) & 0xFF))
+  w.write_u8(u8(uncomp_m1 & 0xFF))
+  w.write_u8(u8((comp_m1 >> 8) & 0xFF))
+  w.write_u8(u8(comp_m1 & 0xFF))
+  if with_props {
+    w.write_u8(u8((pb * 5 + lp) * 9 + lc))
+  }
+  w.write_bytes(body[:])
+}
+
+///|
 pub fn encode_lzma2(
   input : BytesView,
   lc : Int,
@@ -75,39 +99,69 @@ pub fn encode_lzma2(
     w.write_u8(b'\x00')
     return w.to_bytes()
   }
+  let mut enc = @coder.LzmaEnc::new(lc, lp, pb, dict_size.reinterpret_as_int())
   let mut off = 0
   let n = input.length()
+  let mut need_dict_reset = true
+  let mut need_props = true
   while off < n {
     let chunk_n = if n - off > 65536 { 65536 } else { n - off }
-    let chunk = input[off:off + chunk_n]
-    let body = @coder.encode_lzma(
-      chunk,
-      lc,
-      lp,
-      pb,
-      dict_size.reinterpret_as_int(),
-      end_marker=false,
-    )
-    // Compressed size is a 16-bit field (max 65536). LZMA of incompressible
-    // 64 KiB can exceed that; emit an uncompressed chunk instead of wrapping.
+    if need_dict_reset {
+      enc.reset_dict()
+      enc.reset_state()
+    } else if need_props {
+      enc.reset_state()
+    }
+    let trial = enc.clone()
+    let body = trial.encode_chunk(input, off, chunk_n)
     if body.length() < 1 || body.length() > 65536 {
-      write_uncompressed_chunk(w, chunk)
+      write_uncompressed_chunk(w, input[off:off + chunk_n])
+      enc.reset_dict()
+      enc.reset_state()
+      enc.skip_uncompressed(chunk_n)
+      need_dict_reset = false
+      need_props = true
     } else {
-      let uncomp_m1 = chunk_n - 1
-      let comp_m1 = body.length() - 1
-      let control = 0xE0 | (uncomp_m1 >> 16)
-      w.write_u8(u8(control))
-      w.write_u8(u8((uncomp_m1 >> 8) & 0xFF))
-      w.write_u8(u8(uncomp_m1 & 0xFF))
-      w.write_u8(u8((comp_m1 >> 8) & 0xFF))
-      w.write_u8(u8(comp_m1 & 0xFF))
-      w.write_u8(u8((pb * 5 + lp) * 9 + lc))
-      w.write_bytes(body[:])
+      enc = trial
+      if need_dict_reset {
+        write_compressed_chunk(w, 0xE0, chunk_n, body, lc, lp, pb, true)
+      } else if need_props {
+        write_compressed_chunk(w, 0xC0, chunk_n, body, lc, lp, pb, true)
+      } else {
+        write_compressed_chunk(w, 0x80, chunk_n, body, lc, lp, pb, false)
+      }
+      need_dict_reset = false
+      need_props = false
     }
     off = off + chunk_n
   }
   w.write_u8(b'\x00')
   w.to_bytes()
+}
+
+///|
+fn unpack_lzma_props(props : Byte) -> (Int, Int, Int) raise @coder.CoderError {
+  let pn = props.to_int()
+  if pn >= 225 {
+    raise @coder.Data
+  }
+  let lc = pn % 9
+  let t = pn / 9
+  let lp = t % 5
+  let pb = t / 5
+  if lc + lp > 4 {
+    raise @coder.Data
+  }
+  (lc, lp, pb)
+}
+
+///|
+fn add_produced(produced : UInt64, n : Int) -> UInt64 raise @coder.CoderError {
+  let add = n.reinterpret_as_uint().to_uint64()
+  if produced > 0xFFFF_FFFF_FFFF_FFFFUL - add {
+    raise @coder.Data
+  }
+  produced + add
 }
 
 ///|
@@ -119,7 +173,12 @@ pub fn decode_lzma2_consumed(
   let dict_int = dict_as_int(dict_size, memlimit)
   let r = @bit.Reader::new(input)
   let out = @bit.Writer::new()
+  // Dummy lc/lp/pb until the first properties byte. A new stream must
+  // start with dictionary reset (`0x01` or `0xE0..=0xFF`).
+  let dec = @coder.LzmaDec::new(3, 0, 2, dict_int)
   let mut produced = 0UL
+  let mut need_dict_reset = true
+  let mut need_props = true
   while true {
     let control = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
     let c = control.to_int()
@@ -130,52 +189,48 @@ pub fn decode_lzma2_consumed(
       if c != 1 && c != 2 {
         raise @coder.Data
       }
+      if c == 1 {
+        dec.reset_dict()
+        need_props = true
+        need_dict_reset = false
+      } else if need_dict_reset {
+        raise @coder.Data
+      }
       let hi = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
       let lo = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
       let size = ((hi.to_int() << 8) | lo.to_int()) + 1
       let data = r.read_exact(size) catch { @bit.Eof => raise @coder.Eof }
-      let add = size.reinterpret_as_uint().to_uint64()
-      if produced > 0xFFFF_FFFF_FFFF_FFFFUL - add {
-        raise @coder.Data
-      }
-      produced = produced + add
+      produced = add_produced(produced, size)
+      dec.put_uncompressed(data)
       out.write_bytes(data)
     } else {
-      // Only full dictionary + state + properties reset (0xE0..=0xFF).
-      // 0x80/0xA0/0xC0 need a dictionary that survives across chunks.
-      if (c & 0xE0) != 0xE0 {
-        raise @coder.Unsupported
+      if c >= 0xE0 {
+        dec.reset_dict()
+        need_dict_reset = false
+        need_props = true
+      } else if need_dict_reset {
+        raise @coder.Data
       }
       let u1 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
       let u0 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
       let c1 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
       let c0 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-      let props = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-      let pn = props.to_int()
-      if pn >= 225 {
-        raise @coder.Data
-      }
-      let lc = pn % 9
-      let t = pn / 9
-      let lp = t % 5
-      let pb = t / 5
-      if lc + lp > 4 {
-        raise @coder.Data
-      }
       let uncomp = (((c & 0x1F) << 16) | (u1.to_int() << 8) | u0.to_int()) + 1
       let comp = ((c1.to_int() << 8) | c0.to_int()) + 1
-      let payload = r.read_exact(comp) catch { @bit.Eof => raise @coder.Eof }
-      let add = uncomp.reinterpret_as_uint().to_uint64()
-      if produced > 0xFFFF_FFFF_FFFF_FFFFUL - add {
+      if c >= 0xC0 {
+        let props = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+        let (lc, lp, pb) = unpack_lzma_props(props)
+        dec.set_props(lc, lp, pb)
+        need_props = false
+      } else if need_props {
         raise @coder.Data
+      } else if c >= 0xA0 {
+        dec.reset_state()
       }
-      produced = produced + add
-      let plain = @coder.decode_lzma(
+      let payload = r.read_exact(comp) catch { @bit.Eof => raise @coder.Eof }
+      produced = add_produced(produced, uncomp)
+      let plain = dec.decode_payload(
         payload,
-        lc,
-        lp,
-        pb,
-        dict_int,
         uncomp.reinterpret_as_uint().to_uint64(),
       )
       if plain.length() != uncomp {

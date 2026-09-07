@@ -1,0 +1,5 @@
+pkgtype(kind: "executable")
+
+import {
+  "aurora0x27/lzma-mbt" @lzma,
+}

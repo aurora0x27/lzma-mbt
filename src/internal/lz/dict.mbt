@@ -16,6 +16,12 @@ pub fn Dict::new(size : Int) -> Dict {
 }
 
 ///|
+pub fn Dict::reset(self : Dict) -> Unit {
+  self.cyclic = 0
+  self.filled = 0
+}
+
+///|
 pub fn Dict::put(self : Dict, b : Byte) -> Unit {
   self.buf[self.cyclic] = b
   self.cyclic = self.cyclic + 1

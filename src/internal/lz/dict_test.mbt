@@ -27,6 +27,18 @@ test "invalid_distance_is_error" {
 }
 
 ///|
+test "dict_reset_forgets_history" {
+  let d = Dict::new(8)
+  d.put(b'\x11')
+  d.put(b'\x22')
+  d.reset()
+  let err = @test.expect_error(() => d.get(0) |> ignore)
+  assert_true(err is InvalidDistance)
+  d.put(b'\x33')
+  assert_eq(d.get(0), b'\x33')
+}
+
+///|
 test "dict_wraps_and_keeps_filled_cap" {
   let d = Dict::new(2)
   d.put(b'\x01')

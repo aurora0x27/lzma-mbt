@@ -16,7 +16,7 @@ A distance is invalid if `d + 1 >` bytes already produced (and not wrapping thro
 
 ## Data model
 
-Cyclic `Array[Byte]` of `dict_size`, write cursor, `filled` count.
+Cyclic `Array[Byte]` of `dict_size`, write cursor, `filled` count. `reset` clears `cyclic` and `filled` (LZMA2 dictionary reset) without shrinking the buffer.
 
 ## Invariants
 
@@ -34,7 +34,7 @@ Distance too far → `DataError`.
 
 ## Test vectors
 
-Manual put/get/copy, overlapping copy, and wrap after `dict_size` writes.
+Manual put/get/copy, overlapping copy, wrap after `dict_size` writes, and `reset` forgetting prior bytes.
 
 ## Compatibility notes
 

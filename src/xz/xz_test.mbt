@@ -516,3 +516,131 @@ test "xz_unknown_check_id_on_decode_is_unsupported" {
   })
   assert_true(err is @coder.Unsupported)
 }
+
+///|
+/// `xz --block-size=2 --check=crc32 --lzma2=preset=0` of `"aabb"` (2 Blocks).
+/// Block 2 starts at offset 36 (header 12, payload 6, pad 2, CRC32 4).
+fn liblzma_two_block_xz() -> Bytes {
+  b"\xFD\x37\x7A\x58\x5A\x00\x00\x01\x69\x22\xDE\x36\x02\xC0\x06\x02\x21\x01\x0C\x00\x82\x1A\x7A\xF2\x01\x00\x01\x61\x61\x00\x00\x00\xD7\x19\x8A\x07\x02\xC0\x06\x02\x21\x01\x0C\x00\x82\x1A\x7A\xF2\x01\x00\x01\x62\x62\x00\x00\x00\xAE\x1B\xAE\xB5\x00\x02\x16\x02\x16\x02\x00\x00\x8B\xA0\x04\x2B\x3E\x30\x0D\x8B\x02\x00\x00\x00\x00\x01\x59\x5A"
+}
+
+///|
+/// Same encoder settings as `liblzma_two_block_xz`, plaintext `"aabbcc"` (3 Blocks).
+fn liblzma_three_block_xz() -> Bytes {
+  b"\xFD\x37\x7A\x58\x5A\x00\x00\x01\x69\x22\xDE\x36\x02\xC0\x06\x02\x21\x01\x0C\x00\x82\x1A\x7A\xF2\x01\x00\x01\x61\x61\x00\x00\x00\xD7\x19\x8A\x07\x02\xC0\x06\x02\x21\x01\x0C\x00\x82\x1A\x7A\xF2\x01\x00\x01\x62\x62\x00\x00\x00\xAE\x1B\xAE\xB5\x02\xC0\x06\x02\x21\x01\x0C\x00\x82\x1A\x7A\xF2\x01\x00\x01\x63\x63\x00\x00\x00\x79\x1A\xB2\xDB\x00\x03\x16\x02\x16\x02\x16\x02\xC4\x7F\xE5\x7F\x3E\x30\x0D\x8B\x02\x00\x00\x00\x00\x01\x59\x5A"
+}
+
+///|
+fn copy_bytes(enc : Bytes) -> Array[Byte] {
+  let arr = Array::new(capacity=enc.length())
+  for b in enc[:] {
+    arr.push(b)
+  }
+  arr
+}
+
+///|
+fn rewrite_index_crc(arr : Array[Byte]) -> Unit {
+  let n = arr.length()
+  let backward = arr[n - 8].to_int().reinterpret_as_uint() |
+    (arr[n - 7].to_int().reinterpret_as_uint() << 8) |
+    (arr[n - 6].to_int().reinterpret_as_uint() << 16) |
+    (arr[n - 5].to_int().reinterpret_as_uint() << 24)
+  let index_total = (backward.reinterpret_as_int() + 1) * 4
+  let index_start = n - 12 - index_total
+  let crc_off = n - 16
+  let body = Bytes::from_array(arr[index_start:crc_off])
+  let crc = @checksum.crc32(body[:])
+  arr[crc_off] = (crc & 0xFFU).reinterpret_as_int().to_byte()
+  arr[crc_off + 1] = ((crc >> 8) & 0xFFU).reinterpret_as_int().to_byte()
+  arr[crc_off + 2] = ((crc >> 16) & 0xFFU).reinterpret_as_int().to_byte()
+  arr[crc_off + 3] = ((crc >> 24) & 0xFFU).reinterpret_as_int().to_byte()
+}
+
+///|
+test "decode_liblzma_two_block_xz" {
+  let enc = liblzma_two_block_xz()
+  assert_eq(enc[60], b'\x00')
+  assert_eq(enc[61], b'\x02')
+  assert_eq(enc[62], b'\x16')
+  assert_eq(enc[63], b'\x02')
+  assert_eq(enc[64], b'\x16')
+  assert_eq(enc[65], b'\x02')
+  let dec = decode_xz(enc[:], 128UL * 1024UL * 1024UL, false)
+  assert_eq(dec, b"aabb")
+}
+
+///|
+test "decode_liblzma_three_block_xz" {
+  let enc = liblzma_three_block_xz()
+  assert_eq(enc[84], b'\x00')
+  assert_eq(enc[85], b'\x03')
+  let dec = decode_xz(enc[:], 128UL * 1024UL * 1024UL, false)
+  assert_eq(dec, b"aabbcc")
+}
+
+///|
+test "xz_encoder_writes_one_index_record" {
+  let enc = encode_xz(Bytes::make(80, b'a')[:], 3, 0, 2, 4096U)
+  let arr = copy_bytes(enc)
+  let n = arr.length()
+  let backward = arr[n - 8].to_int().reinterpret_as_uint() |
+    (arr[n - 7].to_int().reinterpret_as_uint() << 8) |
+    (arr[n - 6].to_int().reinterpret_as_uint() << 16) |
+    (arr[n - 5].to_int().reinterpret_as_uint() << 24)
+  let index_total = (backward.reinterpret_as_int() + 1) * 4
+  let index_start = n - 12 - index_total
+  assert_eq(arr[index_start], b'\x00')
+  assert_eq(arr[index_start + 1], b'\x01')
+}
+
+///|
+test "xz_multi_block_index_nrec_mismatch" {
+  let arr = copy_bytes(liblzma_two_block_xz())
+  assert_eq(arr[61], b'\x02')
+  arr[61] = b'\x01'
+  rewrite_index_crc(arr)
+  let err = @test.expect_error(() => {
+    decode_xz(Bytes::from_array(arr[:])[:], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Data)
+}
+
+///|
+test "xz_multi_block_index_size_mismatch" {
+  let arr = copy_bytes(liblzma_two_block_xz())
+  assert_eq(arr[65], b'\x02')
+  arr[65] = b'\x03'
+  rewrite_index_crc(arr)
+  let err = @test.expect_error(() => {
+    decode_xz(Bytes::from_array(arr[:])[:], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Data)
+}
+
+///|
+test "xz_second_block_header_truncated" {
+  let enc = liblzma_two_block_xz()
+  let err = @test.expect_error(() => {
+    decode_xz(enc[0:37], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Eof)
+}
+
+///|
+test "xz_second_block_data_truncated" {
+  let enc = liblzma_two_block_xz()
+  let err = @test.expect_error(() => {
+    decode_xz(enc[0:51], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Eof)
+}
+
+///|
+test "xz_second_block_check_truncated" {
+  let enc = liblzma_two_block_xz()
+  let err = @test.expect_error(() => {
+    decode_xz(enc[0:57], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Eof)
+}

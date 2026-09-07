@@ -16,3 +16,7 @@ jobs:
         run: moon fmt --check
       - name: Test
         run: moon test --deny-warn
+      - name: Install xz-utils
+        run: sudo apt-get update && sudo apt-get install -y xz-utils
+      - name: Encode differential
+        run: python3 scripts/diff_encode.py

@@ -126,6 +126,40 @@ fn Probs::new(lc : Int, lp : Int) -> Probs {
 }
 
 ///|
+fn copy_uint_array(src : Array[UInt]) -> Array[UInt] {
+  let n = src.length()
+  let dst = Array::make(n, 0U)
+  for i in 0..<n {
+    dst[i] = src[i]
+  }
+  dst
+}
+
+///|
+fn copy_probs(p : Probs) -> Probs {
+  {
+    is_match: copy_uint_array(p.is_match),
+    is_rep: copy_uint_array(p.is_rep),
+    is_rep_g0: copy_uint_array(p.is_rep_g0),
+    is_rep_g1: copy_uint_array(p.is_rep_g1),
+    is_rep_g2: copy_uint_array(p.is_rep_g2),
+    is_rep0_long: copy_uint_array(p.is_rep0_long),
+    pos_slot: copy_uint_array(p.pos_slot),
+    spec_pos: copy_uint_array(p.spec_pos),
+    align: copy_uint_array(p.align),
+    len_choice: copy_uint_array(p.len_choice),
+    len_low: copy_uint_array(p.len_low),
+    len_mid: copy_uint_array(p.len_mid),
+    len_high: copy_uint_array(p.len_high),
+    rep_len_choice: copy_uint_array(p.rep_len_choice),
+    rep_len_low: copy_uint_array(p.rep_len_low),
+    rep_len_mid: copy_uint_array(p.rep_len_mid),
+    rep_len_high: copy_uint_array(p.rep_len_high),
+    lit: copy_uint_array(p.lit),
+  }
+}
+
+///|
 fn dec_bit(
   dec : @rc.RangeDecoder,
   probs : Array[UInt],

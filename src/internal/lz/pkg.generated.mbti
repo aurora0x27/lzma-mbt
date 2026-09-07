@@ -23,6 +23,7 @@ pub fn Dict::get(Self, Int) -> Byte raise DictError
 pub fn Dict::new(Int) -> Self
 pub fn Dict::output_byte(Self, Int) -> Byte raise DictError
 pub fn Dict::put(Self, Byte) -> Unit
+pub fn Dict::reset(Self) -> Unit
 
 // Type aliases
 

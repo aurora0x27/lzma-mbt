@@ -83,12 +83,17 @@ fn bytes_to_u64_le(v : BytesView) -> UInt64 {
 }
 
 ///|
+/// Sizes recorded for one decoded Block, used to check Index records.
+priv struct BlockSizes {
+  unpadded : UInt64
+  uncompressed : UInt64
+}
+
+///|
 fn parse_index_and_footer(
   data : BytesView,
   flags : Bytes,
-  expect_nrec : UInt64,
-  expect_unpadded : UInt64,
-  expect_uncompressed : UInt64,
+  blocks : Array[BlockSizes],
 ) -> Unit raise @coder.CoderError {
   let r = @bit.Reader::new(data)
   let ind = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
@@ -96,14 +101,14 @@ fn parse_index_and_footer(
     raise @coder.Data
   }
   let nrec = read_vli(r)
-  if nrec != expect_nrec {
+  if nrec != blocks.length().reinterpret_as_uint().to_uint64() {
     raise @coder.Data
   }
-  let mut i = 0UL
-  while i < nrec {
+  let mut i = 0
+  while i < blocks.length() {
     let unpadded = read_vli(r)
     let uncompressed = read_vli(r)
-    if unpadded != expect_unpadded || uncompressed != expect_uncompressed {
+    if unpadded != blocks[i].unpadded || uncompressed != blocks[i].uncompressed {
       raise @coder.Data
     }
     i = i + 1
@@ -142,112 +147,35 @@ fn parse_index_and_footer(
   if y != b'\x59' || z != b'\x5A' {
     raise @coder.Data
   }
-  if r.remaining() != 0 {
+  r.position()
+}
+
+///|
+/// Stream Padding is only null bytes and a multiple of four (including zero).
+/// Called after a Stream Footer when `concatenated` is set. A following
+/// non-null byte is left unconsumed so the next Stream Header can be parsed.
+fn skip_stream_padding(r : @bit.Reader) -> Unit raise @coder.CoderError {
+  let mut n = 0
+  while r.remaining() > 0 && r.rest()[0] == b'\x00' {
+    ignore(r.read_u8() catch { @bit.Eof => raise @coder.Eof })
+    n = n + 1
+  }
+  if n % 4 != 0 {
     raise @coder.Data
   }
 }
 
 ///|
-pub fn encode_xz(
-  input : BytesView,
-  lc : Int,
-  lp : Int,
-  pb : Int,
-  dict_size : UInt,
-  check_id? : Int = 4,
-) -> Bytes raise @coder.CoderError {
-  let check_n = check_field_size(check_id)
-  let payload = @lzma2.encode_lzma2(input, lc, lp, pb, dict_size)
-  let flags = Bytes::from_array([b'\x00', check_id.to_byte()][:])
-  let w = @bit.Writer::new()
-  w.write_bytes(b"\xFD\x37\x7A\x58\x5A\x00"[:])
-  w.write_bytes(flags[:])
-  w.write_u32_le(@checksum.crc32(flags[:]))
-  let content = @bit.Writer::new()
-  content.write_u8(b'\xC0')
-  write_vli(content, payload.length().reinterpret_as_uint().to_uint64())
-  write_vli(content, input.length().reinterpret_as_uint().to_uint64())
-  content.write_u8(b'\x21')
-  content.write_u8(b'\x01')
-  content.write_u8(@lzma2.lzma2_dict_prop(dict_size))
-  while (1 + content.length()) % 4 != 0 {
-    content.write_u8(b'\x00')
-  }
-  let hdr = @bit.Writer::new()
-  hdr.write_u8(((1 + content.length()) / 4).to_byte())
-  hdr.write_bytes(content.to_bytes()[:])
-  let hbytes = hdr.to_bytes()
-  w.write_bytes(hbytes[:])
-  w.write_u32_le(@checksum.crc32(hbytes[:]))
-  w.write_bytes(payload[:])
-  let pad = (4 - payload.length() % 4) % 4
-  for _ in 0..<pad {
-    w.write_u8(b'\x00')
-  }
-  write_check(w, check_id, input)
-  let unpadded = hbytes.length() + 4 + payload.length() + check_n
-  let index = @bit.Writer::new()
-  index.write_u8(b'\x00')
-  write_vli(index, 1UL)
-  write_vli(index, unpadded.reinterpret_as_uint().to_uint64())
-  write_vli(index, input.length().reinterpret_as_uint().to_uint64())
-  pad_to_4(index)
-  let ibytes = index.to_bytes()
-  w.write_bytes(ibytes[:])
-  w.write_u32_le(@checksum.crc32(ibytes[:]))
-  let backward = ((ibytes.length() + 4) / 4 - 1).reinterpret_as_uint()
-  let foot = @bit.Writer::new()
-  foot.write_u32_le(backward)
-  foot.write_bytes(flags[:])
-  let fb = foot.to_bytes()
-  w.write_u32_le(@checksum.crc32(fb[:]))
-  w.write_bytes(fb[:])
-  w.write_bytes(b"\x59\x5A"[:])
-  w.to_bytes()
-}
-
-///|
-pub fn decode_xz(
-  input : BytesView,
+/// Decode one Block starting at the current reader position. The next byte
+/// must already have been peeked as a non-zero Block Header Size (0x00 is
+/// the Index indicator, not a Block).
+fn decode_one_block(
+  r : @bit.Reader,
   memlimit : UInt64,
   ignore_check : Bool,
-) -> Bytes raise @coder.CoderError {
-  let r = @bit.Reader::new(input)
-  let m0 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  let m1 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  let m2 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  let m3 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  let m4 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  let m5 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  if m0 != b'\xFD' ||
-    m1 != b'\x37' ||
-    m2 != b'\x7A' ||
-    m3 != b'\x58' ||
-    m4 != b'\x5A' ||
-    m5 != b'\x00' {
-    raise @coder.Data
-  }
-  let f0 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  let f1 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  if f0 != b'\x00' {
-    raise @coder.Data
-  }
-  let flags = Bytes::from_array([f0, f1][:])
-  let fcrc = r.read_u32_le() catch { @bit.Eof => raise @coder.Eof }
-  if @checksum.crc32(flags[:]) != fcrc {
-    raise @coder.Data
-  }
-  let check_id = f1.to_int()
-  let check_n = check_field_size(check_id)
-  if r.remaining() == 0 {
-    raise @coder.Eof
-  }
-  // A Block Header Size of 0 is invalid, so 0x00 here is the Index indicator
-  // (a Stream with no Blocks), not a Block.
-  if r.rest()[0] == b'\x00' {
-    parse_index_and_footer(r.rest(), flags, 0UL, 0UL, 0UL)
-    return b""
-  }
+  check_id : Int,
+  check_n : Int,
+) -> (Bytes, UInt64) raise @coder.CoderError {
   let hs = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
   let header_len = (hs.to_int() + 1) * 4
   let rest_hdr = r.read_exact(header_len - 5) catch {
@@ -344,12 +272,125 @@ pub fn decode_xz(
       raise @coder.Data
     }
   }
-  parse_index_and_footer(
-    r.rest(),
-    flags,
-    1UL,
-    (hbytes.length() + 4 + used + check_n).reinterpret_as_uint().to_uint64(),
-    plain.length().reinterpret_as_uint().to_uint64(),
-  )
-  plain
+  let unpadded = (hbytes.length() + 4 + used + check_n)
+    .reinterpret_as_uint()
+    .to_uint64()
+  (plain, unpadded)
+}
+
+///|
+pub fn encode_xz(
+  input : BytesView,
+  lc : Int,
+  lp : Int,
+  pb : Int,
+  dict_size : UInt,
+  check_id? : Int = 4,
+) -> Bytes raise @coder.CoderError {
+  // A single Block is enough for a well-formed stream; multi-Block splitting
+  // is not required for decoder compatibility (see docs/research/xz.md).
+  let check_n = check_field_size(check_id)
+  let payload = @lzma2.encode_lzma2(input, lc, lp, pb, dict_size)
+  let flags = Bytes::from_array([b'\x00', check_id.to_byte()][:])
+  let w = @bit.Writer::new()
+  w.write_bytes(b"\xFD\x37\x7A\x58\x5A\x00"[:])
+  w.write_bytes(flags[:])
+  w.write_u32_le(@checksum.crc32(flags[:]))
+  let content = @bit.Writer::new()
+  content.write_u8(b'\xC0')
+  write_vli(content, payload.length().reinterpret_as_uint().to_uint64())
+  write_vli(content, input.length().reinterpret_as_uint().to_uint64())
+  content.write_u8(b'\x21')
+  content.write_u8(b'\x01')
+  content.write_u8(@lzma2.lzma2_dict_prop(dict_size))
+  while (1 + content.length()) % 4 != 0 {
+    content.write_u8(b'\x00')
+  }
+  let hdr = @bit.Writer::new()
+  hdr.write_u8(((1 + content.length()) / 4).to_byte())
+  hdr.write_bytes(content.to_bytes()[:])
+  let hbytes = hdr.to_bytes()
+  w.write_bytes(hbytes[:])
+  w.write_u32_le(@checksum.crc32(hbytes[:]))
+  w.write_bytes(payload[:])
+  let pad = (4 - payload.length() % 4) % 4
+  for _ in 0..<pad {
+    w.write_u8(b'\x00')
+  }
+  write_check(w, check_id, input)
+  let unpadded = hbytes.length() + 4 + payload.length() + check_n
+  let index = @bit.Writer::new()
+  index.write_u8(b'\x00')
+  write_vli(index, 1UL)
+  write_vli(index, unpadded.reinterpret_as_uint().to_uint64())
+  write_vli(index, input.length().reinterpret_as_uint().to_uint64())
+  pad_to_4(index)
+  let ibytes = index.to_bytes()
+  w.write_bytes(ibytes[:])
+  w.write_u32_le(@checksum.crc32(ibytes[:]))
+  let backward = ((ibytes.length() + 4) / 4 - 1).reinterpret_as_uint()
+  let foot = @bit.Writer::new()
+  foot.write_u32_le(backward)
+  foot.write_bytes(flags[:])
+  let fb = foot.to_bytes()
+  w.write_u32_le(@checksum.crc32(fb[:]))
+  w.write_bytes(fb[:])
+  w.write_bytes(b"\x59\x5A"[:])
+  w.to_bytes()
+}
+
+///|
+pub fn decode_xz(
+  input : BytesView,
+  memlimit : UInt64,
+  ignore_check : Bool,
+) -> Bytes raise @coder.CoderError {
+  let r = @bit.Reader::new(input)
+  let m0 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let m1 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let m2 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let m3 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let m4 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let m5 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  if m0 != b'\xFD' ||
+    m1 != b'\x37' ||
+    m2 != b'\x7A' ||
+    m3 != b'\x58' ||
+    m4 != b'\x5A' ||
+    m5 != b'\x00' {
+    raise @coder.Data
+  }
+  let f0 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let f1 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  if f0 != b'\x00' {
+    raise @coder.Data
+  }
+  let flags = Bytes::from_array([f0, f1][:])
+  let fcrc = r.read_u32_le() catch { @bit.Eof => raise @coder.Eof }
+  if @checksum.crc32(flags[:]) != fcrc {
+    raise @coder.Data
+  }
+  let check_id = f1.to_int()
+  let check_n = check_field_size(check_id)
+  let out = @bit.Writer::new()
+  let recs : Array[BlockSizes] = []
+  while true {
+    if r.remaining() == 0 {
+      raise @coder.Eof
+    }
+    // Block Header Size 0 is invalid, so 0x00 is the Index indicator.
+    if r.rest()[0] == b'\x00' {
+      break
+    }
+    let (plain, unpadded) = decode_one_block(
+      r, memlimit, ignore_check, check_id, check_n,
+    )
+    recs.push({
+      unpadded,
+      uncompressed: plain.length().reinterpret_as_uint().to_uint64(),
+    })
+    out.write_bytes(plain[:])
+  }
+  parse_index_and_footer(r.rest(), flags, recs)
+  out.to_bytes()
 }

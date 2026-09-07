@@ -1,6 +1,6 @@
 # 待完成大任务
 
-M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2 / 单 Stream 单 Block `.xz`、CRC32/CRC64、容器外 Delta 与简化 x86 BCJ、Finish 前整段缓冲的流式外壳。完成状态以 [docs/compatibility.md](./docs/compatibility.md) 为准。
+M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2（含跨 chunk 字典与 `0x80`/`0xA0`/`0xC0`/`0xE0`）/ 单 Stream `.xz`（解码 0..N Block，编码仍为 1 Block）、CRC32/CRC64、容器外 Delta 与简化 x86 BCJ、Finish 前整段缓冲的流式外壳。编码侧差分（本库 encode → `xz -d` / liblzma）已在 CI 落地。完成状态以 [docs/compatibility.md](./docs/compatibility.md) 为准。
 
 本文件只列**尚未完成的大任务**。实现顺序按正确性 → 兼容性 → 流式语义 → 性能。不要并行铺开，不要把未实现标成 complete。协议见 [AGENTS.md](./AGENTS.md)。
 
@@ -15,46 +15,36 @@ M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2 / 单 
 
 ---
 
-## T1 — 编码侧差分（本库 encode → 参考解码）
+## 通用完成门（每一项都适用）
 
-**问题**：解码侧已有嵌入的 `liblzma` 向量；编码器输出未经参考 `xz` / `liblzma` 验证。自编自解不能证明格式正确。
+一项任务只有同时满足下面全部条件，才可从本文件删除，并在兼容性矩阵里把对应格子改成 `yes` / `decode+encode`。
 
-**范围**：
+**命令（必须全绿）**
 
-- CI 或可执行包：本库编码的 `.xz` / `.lzma` / LZMA2 交给系统 `xz -d` 或 `liblzma` 解回，明文必须一致。
-- 覆盖空输入、短文本、重复 run、不可压缩、跨 64 KiB、preset 0 与 6、CRC32/CRC64/`None`。
+```text
+moon check --deny-warn
+moon fmt --check
+moon test --deny-warn
+python3 scripts/diff_encode.py
+```
 
-**不做**：要求本库字节与 `xz -6` 相同（贪心编码器允许不同）。
+**标准**
 
-**验收**：`docs/compatibility.md` 中 LZMA1 / LZMA2 / XZ 的 Differential 列能诚实标 encode；CI 失败不得靠删测试过关。
+- 新行为有正例；畸形输入有负例；不得 panic。
+- 不得靠删除或削弱已有测试过 CI。
+- 合法输入按任意 chunk 经现有流式外壳 `write`+`finish` 的结果，须与一次性 `decode` 相同（T7 之前 `Run` 仍可只缓冲）。
+- `docs/research/<组件>.md`、`docs/compatibility.md`、必要时 `docs/api.md` 已更新。
+- 差分列只有在对照 `liblzma` / `xz` 的测试存在且通过时才能标 encode/decode。
+- 编码器字节仍不要求与 `xz -6` 相同，除非另开「比特流复现」任务。
 
----
+**已落地回归（实现后续任务时不得变红）**
 
-## T2 — LZMA2 跨 chunk 状态保持
-
-**问题**：解码器只接受全重置压缩块 `0xE0..=0xFF`。`0x80` / `0xA0` / `0xC0`（以及未压缩 `0x02` 对字典的更新）是 `UnsupportedFeature`。真实 `liblzma` 码流会跨块复用字典和概率表。
-
-**范围**：
-
-- 共享字典：未压缩块 `0x01`/`0x02` 写入字典；压缩块按重置模式复用或重建概率、reps、lc/lp/pb。
-- 控制字节：`0x80` 不重置；`0xA0` 重置 state；`0xC0` 重置 state + properties；`0xE0` 再加重置字典。
-- 每个压缩块仍有独立的 range decoder 初始化（无 LZMA end marker）。
-- 编码器后续块可改为 `0x80`（在不破坏现有 round-trip 与 `Format::Auto` 的前提下）。
-
-**验收**：手写/参考向量覆盖四种重置；`decode_lzma2(encode_lzma2(x)) == x` 对 >64 KiB 仍成立；畸形控制与截断仍是 `Data`/`Eof`，不 panic。更新 `docs/research/lzma2.md`。
-
----
-
-## T3 — `.xz` 多 Block
-
-**问题**：编码器只写一个 Block；解码器在读完第一个 Block 后要求 Index 恰好 1 条记录（空 Stream 0 条除外）。
-
-**范围**：
-
-- 解码：循环读 Block 直到 Index 指示符 `0x00`；Index 记录数、每条 Unpadded/Uncompressed Size 与各 Block 一致。
-- 编码：允许按策略切多个 Block（至少要能解码多 Block 的参考文件）。若第一版编码器仍只写单 Block，必须在文档里写明，不得假装已编码多 Block。
-
-**验收**：嵌入或差分至少一份多 Block `.xz`；单 Block 与空 Stream 回归保持绿色。
+| 项 | 最低回归 |
+| --- | --- |
+| T1 编码差分 | `scripts/diff_encode.py` 现有 26 案（空 / 短 / run / 不可压缩 / 跨 64 KiB / preset 0 与 6 / CRC32·CRC64·None） |
+| T2 LZMA2 跨 chunk | `0xE0` 后 `0x80`、白盒 `0xA0`/`0xC0`、`0x01`+`0x02`、70 000 字节第二块为 `0x80`、liblzma 2 MiB+100 `'A'` 向量；打头 `0x80`/`0xA0`/`0xC0`/`0x02` 仍是 `Data` |
+| `.xz` 多 Block 解码 | `xz --block-size=2` 的 `"aabb"`（2 Block）与 `"aabbcc"`（3 Block）；空 Stream / 单 Block / Footer 后垃圾回归；Index 记录数或逐条 size 不符 → `DataError`；第二 Block Header/Data/Check 截断 → `Eof`；编码器 Index 仍为 1 条 |
+| 默认拒绝 concatenated / SHA-256 | 在 T4 / T5 落地前，现有 `UnsupportedFeature` 测试必须保持 |
 
 ---
 
@@ -68,7 +58,31 @@ M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2 / 单 
 - `concatenated = false`（默认）：Footer 后不得有剩余字节，行为与现在一致。
 - 截断的下一 Stream 头 → `UnexpectedEof`；Padding 非 0 → `DataError`。
 
-**验收**：两段本库或 liblzma `.xz` 拼接能解；默认路径仍拒绝拼接。打开该选项不再抛 `UnsupportedFeature`。
+**测试**
+
+正例：
+
+- `streamA + streamB`（两段本库或 liblzma `.xz`，无 padding）在 `concatenated=true` 下明文为 `plainA + plainB`。
+- `streamA + 4 字节 0x00 + streamB`、`+ 8 字节 0x00` 能解（padding 长度为 4 的倍数）。
+- 三段拼接至少一份。
+- 空 Stream 与非空 Stream 拼接。
+- `Format::Auto` + `concatenated=true` 仍能识别每段 `.xz` 魔数。
+- `Decoder::new(concatenated=true)` 不再在构造时抛 `UnsupportedFeature`；`write`+`finish` 与一次性 `decode` 明文相同。
+
+负例（默认 `concatenated=false`，现有行为）：
+
+- Footer 后直接跟下一 Stream → `DataError`（现有测试可改断言，但默认拒绝必须留下）。
+- `concatenated=true` 且 padding 含非 0 字节 → `DataError`。
+- padding 长度不是 4 的倍数（例如 1、2、3、5 字节 0x00）→ `DataError`。
+- 下一 Stream 魔数读到一半（1..=5 字节）→ `UnexpectedEof`。
+- 对裸 `.lzma` / LZMA2 设 `concatenated=true`：要么明确忽略该选项并测锁定，要么 `InvalidConfiguration`；不得 silently 改变裸流尾部垃圾语义。
+
+**标准**
+
+- [ ] `concatenated=true` 不再出现 `UnsupportedFeature`。
+- [ ] 兼容性矩阵 `concatenated xz`：Decoder 为 yes；Differential 至少 decode。
+- [ ] `docs/api.md` 删除「concatenated → UnsupportedFeature」；写明 padding 规则与默认拒绝。
+- [ ] `docs/research/xz.md` 记录 Stream Padding。
 
 ---
 
@@ -82,7 +96,31 @@ M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2 / 单 
 - `encode`/`decode` 支持 `Check::Sha256`；`ignore_check` 仍跳过核对但必须读满 32 字节。
 - 公开 checksum API 是否导出 `sha256`：若导出，写进 `docs/api.md` 并 `moon info`；不导出则保持内部。
 
-**验收**：空、短、分块输入的已知摘要向量；本库 SHA-256 `.xz` round-trip；参考文件能解。兼容性矩阵 SHA-256 可标 yes。
+**测试**
+
+摘要向量（与 CRC 测试同风格，分块 `init` 可累加）：
+
+- 空输入：`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+- `"abc"`：`ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`
+- `"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"`：`248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1`
+- 分块：`sha256(b, init=sha256(a)) == sha256(a||b)`（至少一组）。
+
+容器：
+
+- 本库 `Check::Sha256` encode/decode round-trip：空、短文本、跨 64 KiB。
+- Stream Flags check ID `0x0A`；Check 字段恰好 32 字节。
+- `ignore_check=true`：把 Check 字段任一字节改掉仍能解出明文，且必须消费 32 字节（后面 Index/Footer 仍对齐）。
+- `ignore_check=false`：改掉 Check 字段 → `DataError`。
+- 参考 `xz --check=sha256` / Python `lzma`（若绑定支持）生成的 `.xz` 能解。
+- Check 字段截断（不足 32 字节）→ `UnexpectedEof`。
+
+**标准**
+
+- [ ] 兼容性矩阵 SHA-256：Decoder / Encoder 为 yes，Differential 为 yes（摘要向量 + 至少一份参考 `.xz`）。
+- [ ] `Check::Sha256` 不再 `UnsupportedFeature`；未知 Check ID 仍是 `UnsupportedFeature`。
+- [ ] 导出或不导出 `sha256` 均在 `docs/api.md` 写死；`moon info` 与实现一致。
+- [ ] `docs/research/checksum.md` 写明 FIPS 180-4 与「校验未压缩明文」。
+- [ ] 编码差分增加至少一案 SHA-256 `.xz` → `xz -d` 或 Python `lzma`。
 
 ---
 
@@ -96,7 +134,40 @@ M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2 / 单 
 2. Delta 作为 Block 内 filter（ID `0x03`），distance 编码与 liblzma 头格式一致（256 → 0）。
 3. ARM / ARM64 / ARM-Thumb / PowerPC / IA64 / SPARC：各为一个后续子任务，先有研究笔记和参考向量再写码。
 
-**验收**：容器内 Delta+LZMA2、x86 BCJ+LZMA2 的参考 `.xz` 能解；编码若写进 Block Header，参考解码器能解。根包额外 `filters` 行为保持不变，除非任务明确要统一。
+每个子任务单独套用「通用完成门」。未做的 ISA 必须仍是 `UnsupportedFeature`，并保留负例。
+
+**测试（x86 BCJ，ID `0x04`）**
+
+- 含重叠 `E8`/`E9`、MSByte 状态与 `prev_mask` 的向量，与 `lzma_simple_x86_*` / 参考 `.xz` 一致（不能只用当前可逆子集冒充 complete）。
+- 参考 `xz`/`liblzma` 生成的 BCJ+LZMA2 `.xz` 能解。
+- 若编码写入 Block Header：`xz -d` 能解；Filter Flags 的 filter 数、ID、properties 与 liblzma 头格式一致。
+- `start_offset`：0 与非 0 各至少一案。
+- 根包 `EncodeOptions.filters` 的容器外 BCJ 现有 round-trip 不得无故改变；若统一实现，须在任务说明和 `docs/api.md` 写明。
+
+**测试（Delta，ID `0x03`）**
+
+- distance 1、4、256（属性字节 256→0）各至少一案。
+- 参考 Delta+LZMA2 `.xz` 能解。
+- 若编码写进容器：`xz -d` 能解。
+- 非法 distance（属性无法表示、或 0）→ `DataError` / `InvalidConfiguration`，不 panic。
+- 根包容器外 Delta 现有测试保持绿色。
+
+**测试（其余 ISA，每个子任务）**
+
+- 先有 `docs/research/filters.md`（或独立笔记）+ 至少一份参考 `.xz` / 变换向量，再写码。
+- 解码参考文件明文一致；未实现的 ID 仍 `UnsupportedFeature`。
+
+**负例（所有子任务共用）**
+
+- 未知 filter ID → `UnsupportedFeature`。
+- 过滤器链过长 / 非最后一条不是 LZMA2（若规格要求 LZMA2 在链尾）→ `DataError` 或 `UnsupportedFeature`，行为写进研究笔记并测锁定。
+- Filter properties 长度或内容非法 → `DataError`。
+
+**标准**
+
+- [ ] 本子任务对应的兼容性矩阵格子有测试才标 yes；未做 ISA 保持 no。
+- [ ] 容器内链与根包 `filters` 的关系在 `docs/api.md` / `docs/research/xz.md` / `filters.md` 写清。
+- [ ] 不得把简化 E8/E9 子集标成「完整 x86 BCJ」。
 
 ---
 
@@ -111,47 +182,98 @@ M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2 / 单 
 - `NeedInput` / `NeedOutput` 与 `consumed`/`produced` 可测试。
 - 不得再做第二套编解码器；一次性 API 必须走同一状态机。
 
-**验收**：1 字节输入、1 字节输出槽、在每个内部状态切开输入，结果与一次性 API 相同；截断不产生错误成功明文。`docs/api.md` 删除「Finish 前整段缓冲」的现行限制描述。
+**测试**
 
-**依赖**：T2 完成后再做此项，否则 LZMA2 增量会缺少跨 chunk 状态。
+等价性（`.xz` / `.lzma` / 裸 LZMA2 各至少一组短文本 + 一组跨 64 KiB）：
+
+- 一次性 `decode(encode(x))` 与流式 `code(..., Run)` 循环再 `Finish` 的明文/码流语义相同。
+- 输入每次 1 字节、输出槽每次 1 字节。
+- 输入在「每个已文档化的内部状态」切开（至少：Stream Header 中、Block Header 中、LZMA2 控制字节后、压缩 payload 中、Index、Footer）。
+- 随机 chunk 大小（固定种子）≥ 50 次切分，结果与一次性 API 相同。
+
+状态与计数：
+
+- `Run` 在输入耗尽且未结束时发出 `NeedInput`（或文档中等价、可测的契约），且 `consumed`/`produced` 与缓冲一致。
+- 输出槽满 → `NeedOutput`；随后用空输入 `Run`/`Finish` 能排空，不丢字节。
+- `total_in` / `total_out` 在 `BufferTooSmall` 重试后不倒退、不重复计算（对齐现有空输出槽回归）。
+
+Flush：
+
+- 若实现 `SyncFlush`/`FullFlush`：各有正例（flush 后参考解码器能解已写出的码流前缀，或文档规定的可解码边界）；重复 flush 不损坏状态。
+- 若继续拒绝：现有 `InvalidConfiguration` 测试保留；`docs/api.md` 写死「不是 `Run`」。禁止把 Flush 当成 `Run` 吞掉。
+
+负例：
+
+- 截断流在 `Finish` 时 `UnexpectedEof` / `DataError`，不得返回「成功但短一截」的明文。
+- `StreamEnd` 之后再 `Run` 有效载荷 → 与当前拒绝语义一致或更严，须有测试。
+- 畸形控制/坏 CRC 在增量路径与一次性路径错误标签一致。
+
+**标准**
+
+- [ ] `docs/api.md` 删除「Finish 前整段缓冲」及「`Run` 不产生输出 / 不发出 `NeedInput`」的现行限制。
+- [ ] 兼容性矩阵 Streaming 列仍为 yes，且注释改为真正增量（不再写 Finish 前整段缓冲）。
+- [ ] 一次性 `encode`/`decode` 与 `Encoder`/`Decoder` 共用同一状态机（代码结构或测试能证明不是第二套实现）。
+- [ ] T1 差分与 T2 LZMA2 跨 chunk 回归绿色。
 
 ---
 
 ## T8 — 最优解析（性能里程碑 M10）
 
-**问题**：LZMA1 编码器是贪心匹配，回看上限 4096。正确性未用参考解码器钉死后，不要把压缩比优化当主线。
+**问题**：LZMA1 编码器是贪心匹配，回看上限 4096。编码侧差分必须保持绿色，不要把压缩比优化当主线。
 
-**前置**：T1 编码差分已绿。
+**前置**：`scripts/diff_encode.py` 必须保持绿色。
 
 **范围**：最优解析或等价动态规划；preset 0..=9 的 dict/lc/lp/pb 已有，可再对齐 nice_len / depth 等**外部可观察**参数。仍不要求与 `xz -6` 字节相同，除非另开「比特流复现」任务。
 
-**验收**：有压缩比/速度数字前后对比；全部现有向量与差分仍通过；确定性保持。
+**测试**
+
+正确性（先于任何速度数字）：
+
+- 全部现有单元 / 向量 / `scripts/diff_encode.py` 通过。
+- `encode` 两次同一输入字节相同（确定性）。
+- 空、1 字节、不可压缩 64 KiB、70 000 字节 run、preset 0 与 6 仍能被 `xz -d` / Python `lzma` 解回。
+
+压缩比（相对切换前的贪心实现，同一输入、preset 6、`.xz`）：
+
+- 至少记录：短文本 `"hello lzma"`、64 字节 run、256 字节混合、64 KiB 不可压缩、70 000 字节 run。
+- 可压缩输入（run / 短重复）的压缩体积 **不得差于** 切换前；允许相等。
+- 不可压缩输入体积允许变差，但须在笔记中写明。
+
+速度：
+
+- 同一组输入记录切换前后墙钟时间（或 `moon run` / 基准脚本）。允许变慢，但数字必须留下，禁止无测量的「应该更快」。
+
+**标准**
+
+- [ ] 在 `docs/research/lzma.md` 或独立笔记写下前后压缩比与时间表。
+- [ ] 兼容性矩阵 Encoder 仍为 yes；Differential 仍含 encode。
+- [ ] 公开 API 未擅自改默认 preset / check / 格式。
+- [ ] 回看/搜索宽度若变为外部可观察，须有测试锁定，且不破坏 `memlimit` 语义。
 
 ---
 
 ## 明确延后（不要当成本文件的执行项）
 
-| 项 | 原因 |
-| --- | --- |
-| M9 `compat` 包（`lzma_stream` / `lzma_ret` 名） | 不得污染根包；需要时另开任务 |
-| 多线程编码器 | 第一版只保证单线程确定性 |
-| MicroLZMA | 非核心路径 |
-| 自定义 allocator | MoonBit 运行时管理内存 |
-| Index 全套编辑 API | 解码只需最小 Index 校验 |
+这些项**没有**实现任务。标准是：根包不出现对应 API，也不把兼容性矩阵标成 yes。
+
+| 项 | 原因 | 测试/标准 |
+| --- | --- | --- |
+| M9 `compat` 包（`lzma_stream` / `lzma_ret` 名） | 不得污染根包 | 根包 `pkg.generated.mbti` 无 `lzma_stream`/`lzma_ret`；需要时另开任务 |
+| 多线程编码器 | 第一版只保证单线程确定性 | 同输入两次 `encode` 字节相同；无线程相关公开选项 |
+| MicroLZMA | 非核心路径 | 无 MicroLZMA 公开入口；未知格式仍 `FormatError` / `UnsupportedFeature` |
+| 自定义 allocator | MoonBit 运行时管理内存 | 无 allocator 回调 API |
+| Index 全套编辑 API | 解码只需最小 Index 校验 | 无 `lzma_index_*` 编辑接口；解码只测记录数与 size 一致 |
 
 ---
 
 ## 建议执行顺序
 
 ```text
-T1 编码差分
- → T2 LZMA2 跨 chunk 状态
- → T3 多 Block
- → T4 concatenated
+T4 concatenated
  → T5 SHA-256
  → T6 容器内过滤器（x86 / Delta 优先）
  → T7 增量流式状态机
  → T8 最优解析
 ```
 
-T3–T5 在 T2 之后可按依赖拆开做，但不要与 T7 混在同一变更里。T8 不得早于 T1。
+T4–T5 可按依赖拆开做，但不要与 T7 混在同一变更里。T8 期间编码差分必须保持绿色。T6 按过滤器拆 PR，每份 PR 单独满足「通用完成门」。

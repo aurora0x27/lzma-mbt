@@ -19,6 +19,21 @@ pub(all) suberror CoderError {
 } derive(Eq, @debug.Debug)
 
 // Types and methods
+type LzmaDec
+pub fn LzmaDec::decode_payload(Self, BytesView, UInt64, allow_end_marker? : Bool) -> Bytes raise CoderError
+pub fn LzmaDec::new(Int, Int, Int, Int) -> Self
+pub fn LzmaDec::put_uncompressed(Self, BytesView) -> Unit
+pub fn LzmaDec::reset_dict(Self) -> Unit
+pub fn LzmaDec::reset_state(Self) -> Unit
+pub fn LzmaDec::set_props(Self, Int, Int, Int) -> Unit
+
+type LzmaEnc
+pub fn LzmaEnc::clone(Self) -> Self
+pub fn LzmaEnc::encode_chunk(Self, BytesView, Int, Int, end_marker? : Bool) -> Bytes
+pub fn LzmaEnc::new(Int, Int, Int, Int) -> Self
+pub fn LzmaEnc::reset_dict(Self) -> Unit
+pub fn LzmaEnc::reset_state(Self) -> Unit
+pub fn LzmaEnc::skip_uncompressed(Self, Int) -> Unit
 
 // Type aliases
 

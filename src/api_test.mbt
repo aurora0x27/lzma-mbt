@@ -84,6 +84,42 @@ test "stream_chunked_xz_decode" {
 }
 
 ///|
+/// `xz --block-size=2 --check=crc32 --lzma2=preset=0` of `"aabb"` (2 Blocks).
+fn liblzma_two_block_xz() -> Bytes {
+  b"\xFD\x37\x7A\x58\x5A\x00\x00\x01\x69\x22\xDE\x36\x02\xC0\x06\x02\x21\x01\x0C\x00\x82\x1A\x7A\xF2\x01\x00\x01\x61\x61\x00\x00\x00\xD7\x19\x8A\x07\x02\xC0\x06\x02\x21\x01\x0C\x00\x82\x1A\x7A\xF2\x01\x00\x01\x62\x62\x00\x00\x00\xAE\x1B\xAE\xB5\x00\x02\x16\x02\x16\x02\x00\x00\x8B\xA0\x04\x2B\x3E\x30\x0D\x8B\x02\x00\x00\x00\x00\x01\x59\x5A"
+}
+
+///|
+test "decode_liblzma_two_block_xz" {
+  assert_eq(decode(liblzma_two_block_xz()[:]), b"aabb")
+}
+
+///|
+test "stream_chunked_two_block_xz" {
+  let enc = liblzma_two_block_xz()
+  let dec = Decoder::new()
+  let mut i = 0
+  while i < enc.length() {
+    dec.write(enc[i:i + 1]) |> ignore
+    i = i + 1
+  }
+  assert_eq(dec.finish(), b"aabb")
+}
+
+///|
+test "xz_second_block_header_truncated_is_eof" {
+  let enc = liblzma_two_block_xz()
+  let err = @test.expect_error(() => {
+    decode(enc[0:37], options={
+      ..DecodeOptions::default(),
+      format: Format::Xz,
+    })
+    |> ignore
+  })
+  assert_true(err is UnexpectedEof)
+}
+
+///|
 test "stream_chunked_lzma2_decode" {
   let src = b"chunked lzma2"
   let enc = encode(src[:], options={
