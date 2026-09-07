@@ -1,0 +1,29 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt/internal/lz"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+
+// Errors
+pub suberror DictError {
+  InvalidDistance
+} derive(Eq, @debug.Debug)
+
+// Types and methods
+pub struct Dict {
+  buf : Array[Byte]
+  mut cyclic : Int
+  mut filled : Int
+}
+pub fn Dict::copy_match(Self, Int, Int) -> Unit raise DictError
+pub fn Dict::get(Self, Int) -> Byte raise DictError
+pub fn Dict::new(Int) -> Self
+pub fn Dict::output_byte(Self, Int) -> Byte raise DictError
+pub fn Dict::put(Self, Byte) -> Unit
+
+// Type aliases
+
+// Traits

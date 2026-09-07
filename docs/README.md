@@ -5,7 +5,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [architecture.md](./architecture.md) | MoonBit 项目/包架构调研，以及本库的分层落地 |
-| [api.md](./api.md) | 公共接口设计：类型、错误、一次性 API、流式 API、语义约束 |
-| [research/](./research/) | 各算法组件的研究笔记（按 `AGENTS.md` 约定，实现前补齐） |
+| [api.md](./api.md) | 公共接口：类型、错误、一次性 API、流式 API、语义约束 |
+| [compatibility.md](./compatibility.md) | 功能完成度与差分配额（有测试才标 yes） |
+| [research/](./research/) | 各算法组件的研究笔记 |
 
 权威开发协议见仓库根目录 [`AGENTS.md`](../AGENTS.md)。

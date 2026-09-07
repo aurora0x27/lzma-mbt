@@ -1,0 +1,15 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt/checksum"
+
+// Values
+pub fn crc32(BytesView, init? : UInt) -> UInt
+
+pub fn crc64(BytesView, init? : UInt64) -> UInt64
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

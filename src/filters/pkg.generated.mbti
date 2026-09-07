@@ -1,0 +1,24 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt/filters"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn bcj_x86(BytesView, UInt, Bool) -> Bytes
+
+pub fn delta_decode(BytesView, Int) -> Bytes raise FilterError
+
+pub fn delta_encode(BytesView, Int) -> Bytes raise FilterError
+
+// Errors
+pub suberror FilterError {
+  InvalidDistance
+} derive(Eq, @debug.Debug)
+
+// Types and methods
+
+// Type aliases
+
+// Traits

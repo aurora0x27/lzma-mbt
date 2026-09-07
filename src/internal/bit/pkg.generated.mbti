@@ -1,0 +1,47 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt/internal/bit"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn byte_to_uint(Byte) -> UInt
+
+pub fn uint_lo32(UInt64) -> UInt
+
+pub fn uint_to_byte(UInt) -> Byte
+
+// Errors
+pub suberror BitError {
+  Eof
+} derive(Eq, @debug.Debug)
+
+// Types and methods
+pub struct Reader {
+  data : BytesView
+  mut pos : Int
+}
+pub fn Reader::new(BytesView) -> Self
+pub fn Reader::position(Self) -> Int
+pub fn Reader::read_exact(Self, Int) -> BytesView raise BitError
+pub fn Reader::read_u32_le(Self) -> UInt raise BitError
+pub fn Reader::read_u64_le(Self) -> UInt64 raise BitError
+pub fn Reader::read_u8(Self) -> Byte raise BitError
+pub fn Reader::remaining(Self) -> Int
+pub fn Reader::rest(Self) -> BytesView
+
+pub struct Writer {
+  data : Array[Byte]
+}
+pub fn Writer::length(Self) -> Int
+pub fn Writer::new() -> Self
+pub fn Writer::to_bytes(Self) -> Bytes
+pub fn Writer::write_bytes(Self, BytesView) -> Unit
+pub fn Writer::write_u32_le(Self, UInt) -> Unit
+pub fn Writer::write_u64_le(Self, UInt64) -> Unit
+pub fn Writer::write_u8(Self, Byte) -> Unit
+
+// Type aliases
+
+// Traits

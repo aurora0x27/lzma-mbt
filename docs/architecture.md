@@ -145,7 +145,7 @@ pub fn decode(data : BytesView) -> Bytes raise Error
 1. **规范先于实现**：包边界按 XZ/LZMA 规格和 `liblzma` 的外部可观察行为切，不按 C 源文件切。
 2. **公开面要小**：外部默认只 import 根包。格式专用包可以公开，但不保证内部算法包稳定。
 3. **独立实现，行为对齐**：不把 `liblzma` 的指针、`lzma_ret`、宏翻译成 MoonBit；对齐的是比特流、错误分类、流式状态。
-4. **流式是一等公民**：不能先做整缓冲再假装能流式。
+4. **流式 API 与一次性路径共用实现**：`Encoder`/`Decoder` 在 `Finish` 前缓冲输入，再调用同一套 `encode`/`decode`。真正按字节推进的 LZMA 状态机是后续任务，不得再做第二套编解码器来假装增量。
 5. **增量交付**：包可以先有接口和空实现/测试桩，但不得把未完成包标成 complete。
 
 ### 目标目录
@@ -158,14 +158,13 @@ lzma-mbt/
 ├── docs/
 │   ├── architecture.md      # 本文
 │   ├── api.md
+│   ├── compatibility.md
 │   └── research/            # 组件研究笔记
-├── tests/                   # 非 MoonBit 包的差分向量、参考输出（数据）
 └── src/
     ├── moon.pkg             # 根包：aurora0x27/lzma-mbt
     ├── error.mbt
     ├── options.mbt
-    ├── encode.mbt
-    ├── decode.mbt
+    ├── codec.mbt
     ├── stream.mbt
     ├── lzma/                # 公开：LZMA1 / .lzma
     ├── lzma2/               # 公开：LZMA2
@@ -189,32 +188,28 @@ lzma-mbt/
 
 | 包 | 对外 | 职责 | 允许依赖 |
 | --- | :---: | --- | --- |
-| `aurora0x27/lzma-mbt` | 是 | 易用编解码、流式入口、错误/选项再导出 | `lzma`, `lzma2`, `xz`, `checksum`, `filters` |
-| `.../lzma` | 是 | LZMA1 属性、Alone 格式、字面量/匹配/距离 | `internal/coder`, `internal/lz`, `internal/range_coder`, `internal/bit` |
-| `.../lzma2` | 是 | LZMA2 chunk、字典重置、未压缩块 | `lzma`, `internal/*` |
-| `.../xz` | 是 | Stream/Block/Index/Footer、过滤器链 | `lzma2`, `filters`, `checksum` |
-| `.../checksum` | 是 | CRC32、CRC64、SHA-256（按需） | `internal/bit`（若需要） |
-| `.../filters` | 是 | BCJ、Delta；默认不启用未实现过滤器 | `internal/bit` |
-| `.../internal/bit` | 否 | 位/字节读写、整数打包、越界检查 | 无（或仅 core） |
+| `aurora0x27/lzma-mbt` | 是 | 易用编解码、流式入口、错误/选项再导出 | `lzma`, `lzma2`, `xz`, `checksum`, `filters`, `internal/coder` |
+| `.../lzma` | 是 | LZMA_Alone 头与 payload | `internal/coder`, `internal/bit` |
+| `.../lzma2` | 是 | LZMA2 chunk、字典重置、未压缩块 | `internal/coder`, `internal/bit` |
+| `.../xz` | 是 | Stream/Block/Index/Footer | `lzma2`, `checksum`, `internal/coder`, `internal/bit` |
+| `.../checksum` | 是 | CRC32、CRC64 | 无（仅 core） |
+| `.../filters` | 是 | Delta、简化 x86 BCJ（根包额外前后处理） | 无（仅 core） |
+| `.../internal/bit` | 否 | 位/字节读写、整数打包 | 无（或仅 core） |
 | `.../internal/range_coder` | 否 | 范围编解码、概率更新 | `internal/bit` |
-| `.../internal/lz` | 否 | 字典、匹配查找、距离/长度语义 | `internal/bit` |
+| `.../internal/lz` | 否 | 滑动字典 | `internal/bit` |
 | `.../internal/coder` | 否 | LZMA 状态机胶水，供 `lzma`/`lzma2` 使用 | `range_coder`, `lz`, `bit` |
 
 依赖只能从上到下：
 
 ```text
 根包
-  ↓
-xz ──────────────► filters
-  ↓                  ↓
-lzma2 ► lzma ► checksum
-          ↓
-     internal/coder
-          ↓
-   range_coder   lz
-          ↓       ↓
-            bit
+  ├─► xz ──► lzma2 ─┐
+  ├─► lzma ─────────┼► internal/coder ─► range_coder / lz ─► bit
+  ├─► filters       │
+  └─► checksum ◄────┘  （xz 校验字段）
 ```
+
+`.xz` Block 内的过滤器链仍只有 LZMA2。Delta / BCJ 由根包在容器外前后处理，`xz` 包不依赖 `filters`。
 
 任何时候出现 `bit → lzma` 或 `lzma → xz`，都视为架构错误，应停下来改任务而不是“顺便改一层”。
 
@@ -233,12 +228,9 @@ lzma2 ► lzma ► checksum
 ```text
 src/lzma/
 ├── moon.pkg
-├── props.mbt              # lc/lp/pb、dict_size、properties 字节
-├── decoder.mbt
-├── encoder.mbt
-├── decoder_test.mbt       # 黑盒：只测公开解码 API
-├── decoder_wbtest.mbt     # 白盒：状态转换、畸形流
-└── vectors_wbtest.mbt     # 参考向量
+├── alone.mbt
+├── alone_test.mbt
+└── pkg.generated.mbti
 ```
 
 研究笔记放 `docs/research/lzma.md`，不把规格长文塞进源码注释。源码注释只写“为什么”。
@@ -249,8 +241,8 @@ src/lzma/
 | --- | --- |
 | 单元 / 属性 / 负例 | 对应包的 `_test.mbt` / `_wbtest.mbt` |
 | 根 API 黑盒 | `src/*_test.mbt` |
-| 参考向量二进制 | `tests/vectors/`（数据，不是包） |
-| 与系统 `liblzma` 的差分驱动 | 后续单独任务：`src/diff` 或 native 可执行包；未落地前不要假装已差分 |
+| 参考向量 | 嵌在对应 `*_test.mbt` 的字节字面量里（尚无独立 `tests/vectors/` 目录） |
+| 与系统 `liblzma` 的差分驱动 | 后续独立任务：可执行包或 CI 脚本；未落地前不要假装已差分 |
 
 `checksum` 和 `bit` 必须先有可独立复现的向量，上层才能做差分。
 
@@ -268,7 +260,7 @@ src/lzma/
 | M5 | `lzma2` | LZMA2 编解码 |
 | M6 | `xz` | `.xz` |
 | M7 | `filters` | 过滤器链 |
-| M8 | 根包 `stream.mbt` 补全 | 增量 `code` |
+| M8 | 根包 `stream.mbt` | `write`/`code`/`finish`（Finish 前整段缓冲） |
 | M9 | 可选 `compat` 包 | 仅当需要 C 名映射 |
 | M10 | 不新增包 | 性能 |
 
@@ -288,12 +280,16 @@ src/lzma/
 ### 开放问题
 
 1. **模块名是否固定为 `aurora0x27/lzma-mbt`**：与当前 GitHub 远程一致。若以后改在 mooncakes.io 的组织名下发布，只改 `moon.mod` 的 `name`，包相对路径保持不变。
-2. **`filters` 是否从一开始就公开**：公开包名先占住，实现按过滤器逐个加。未实现的过滤器必须返回 `UnsupportedFeature`，不能 silently skip。
-3. **差分测试如何调用参考实现**：Windows/Linux 上的系统 `liblzma`、自编译 XZ Utils、还是测试向量仓库。这是 M0/M3 的独立任务，不在本文拍板。
+2. **`filters` 是否从一开始就公开**：已公开。未实现的过滤器与 `FilterSpec::Lzma1`/`Lzma2` 在额外链中返回 `InvalidConfiguration` / `UnsupportedFeature`，不能 silently skip。
+3. **差分测试如何调用参考实现**：解码侧已嵌入 `liblzma` 向量。编码器输出与 `xz -6` 字节对齐、以及 CI 里用参考解码器解本库码流，仍是独立任务。
 4. **多线程编码器**：`liblzma` 有 `lzma_stream_encoder_mt`。MoonBit 后端与并发模型未作为本阶段前提，**第一版只保证单线程语义**。
 
 ### 建议的下一步
 
-1. 补 `docs/research/bit.md` 与 checksum 研究笔记。
-2. 初始化 `moon.mod` + `src/` 包骨架（空实现也可，但要能 `moon check`）。
-3. 按 M1 实现 `internal/bit` 与 `checksum`，并带向量测试。
+M0–M8 骨架与正确性测试已在本仓库落地。后续独立任务：
+
+1. 编码输出对接 `xz -d` / `liblzma` 的差分（目前差分列仅为 decode）
+2. LZMA2 跨 chunk 状态保持（`0x80`/`0xA0`）
+3. `.xz` 多 Block、concatenated Streams、SHA-256
+4. 完整 x86 BCJ 及 ARM 等过滤器作为容器内 filter
+5. 真正增量的 range/LZMA 状态机（现在 `Finish` 前整段缓冲）

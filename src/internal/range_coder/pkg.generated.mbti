@@ -1,0 +1,53 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt/internal/range_coder"
+
+import {
+  "aurora0x27/lzma-mbt/internal/bit",
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub const BIT_MODEL_TOTAL : UInt = 2048
+
+pub const MOVE_BITS : Int = 5
+
+pub const PROB_INIT : UInt = 1024
+
+pub const TOP : UInt = 0x01000000
+
+pub fn prob_update_0(UInt) -> UInt
+
+pub fn prob_update_1(UInt) -> UInt
+
+// Errors
+pub suberror RcError {
+  Eof
+  Data
+} derive(Eq, @debug.Debug)
+
+// Types and methods
+pub struct RangeDecoder {
+  mut range : UInt
+  mut code : UInt
+  mut pos : Int
+  data : BytesView
+}
+pub fn RangeDecoder::decode_bit(Self, Array[UInt], Int) -> Int raise RcError
+pub fn RangeDecoder::decode_direct_bits(Self, Int) -> UInt raise RcError
+pub fn RangeDecoder::new(BytesView) -> Self raise RcError
+
+pub struct RangeEncoder {
+  mut low : UInt64
+  mut range : UInt
+  mut cache : UInt
+  mut cache_size : UInt64
+  out : @bit.Writer
+}
+pub fn RangeEncoder::encode_bit(Self, Array[UInt], Int, Int) -> Unit
+pub fn RangeEncoder::encode_direct_bits(Self, UInt, Int) -> Unit
+pub fn RangeEncoder::flush(Self) -> Bytes
+pub fn RangeEncoder::new() -> Self
+
+// Type aliases
+
+// Traits

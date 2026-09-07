@@ -1,0 +1,19 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt/xz"
+
+import {
+  "aurora0x27/lzma-mbt/internal/coder",
+}
+
+// Values
+pub fn decode_xz(BytesView, UInt64, Bool) -> Bytes raise @coder.CoderError
+
+pub fn encode_xz(BytesView, Int, Int, Int, UInt, check_id? : Int) -> Bytes raise @coder.CoderError
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

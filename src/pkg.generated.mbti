@@ -1,0 +1,150 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub const DEFAULT_MEMLIMIT : UInt64 = 134217728
+
+pub const MAX_DICT_SIZE : UInt = 1610612736
+
+pub const MIN_DICT_SIZE : UInt = 4096
+
+pub const UNKNOWN_SIZE : UInt64 = 0xFFFF_FFFF_FFFF_FFFF
+
+pub fn crc32(BytesView, init? : UInt) -> UInt
+
+pub fn crc64(BytesView, init? : UInt64) -> UInt64
+
+pub fn decode(BytesView, options? : DecodeOptions) -> Bytes raise LzmaError
+
+pub fn effective_memlimit(UInt64?) -> UInt64
+
+pub fn encode(BytesView, options? : EncodeOptions) -> Bytes raise LzmaError
+
+pub fn pack_props(Int, Int, Int) -> Byte raise LzmaError
+
+pub fn unpack_props(Byte) -> (Int, Int, Int) raise LzmaError
+
+// Errors
+pub suberror LzmaError {
+  InvalidInput(String)
+  UnexpectedEof
+  InvalidConfiguration(String)
+  UnsupportedFeature(String)
+  MemoryLimit
+  DataError
+  BufferTooSmall
+  FormatError
+} derive(Eq, @debug.Debug)
+
+// Types and methods
+pub(all) enum Action {
+  Run
+  SyncFlush
+  FullFlush
+  Finish
+} derive(Eq, @debug.Debug)
+
+pub(all) enum Check {
+  None
+  Crc32
+  Crc64
+  Sha256
+} derive(Eq, @debug.Debug)
+
+pub(all) struct CodeResult {
+  consumed : Int
+  produced : Int
+  status : Status
+} derive(Eq, @debug.Debug)
+
+pub(all) struct DecodeOptions {
+  format : Format
+  memlimit : UInt64?
+  concatenated : Bool
+  ignore_check : Bool
+  filters : Array[FilterSpec]
+} derive(Eq, @debug.Debug)
+pub fn DecodeOptions::default() -> Self
+pub fn DecodeOptions::validate(Self) -> Unit raise LzmaError
+
+type Decoder
+pub fn Decoder::code(Self, BytesView, OutputBuf, Action) -> CodeResult raise LzmaError
+pub fn Decoder::finish(Self) -> Bytes raise LzmaError
+pub fn Decoder::new(options? : DecodeOptions) -> Self raise LzmaError
+pub fn Decoder::reset(Self) -> Unit raise LzmaError
+pub fn Decoder::total_in(Self) -> UInt64
+pub fn Decoder::total_out(Self) -> UInt64
+pub fn Decoder::write(Self, BytesView) -> Unit raise LzmaError
+
+pub(all) struct EncodeOptions {
+  format : Format
+  preset : Preset
+  check : Check
+  props : LzmaProps?
+  filters : Array[FilterSpec]
+} derive(Eq, @debug.Debug)
+pub fn EncodeOptions::default() -> Self
+pub fn EncodeOptions::resolved_props(Self) -> LzmaProps raise LzmaError
+pub fn EncodeOptions::validate(Self) -> Unit raise LzmaError
+
+type Encoder
+pub fn Encoder::code(Self, BytesView, OutputBuf, Action) -> CodeResult raise LzmaError
+pub fn Encoder::finish(Self) -> Bytes raise LzmaError
+pub fn Encoder::new(options? : EncodeOptions) -> Self raise LzmaError
+pub fn Encoder::reset(Self) -> Unit raise LzmaError
+pub fn Encoder::total_in(Self) -> UInt64
+pub fn Encoder::total_out(Self) -> UInt64
+pub fn Encoder::write(Self, BytesView) -> Unit raise LzmaError
+
+pub(all) enum FilterSpec {
+  Lzma1(LzmaProps)
+  Lzma2(LzmaProps)
+  Delta(distance~ : Int)
+  BcjX86(start_offset~ : UInt)
+} derive(Eq, @debug.Debug)
+
+pub(all) enum Format {
+  Auto
+  Lzma
+  Lzma2
+  Xz
+} derive(Eq, @debug.Debug)
+
+pub(all) struct LzmaProps {
+  lc : Int
+  lp : Int
+  pb : Int
+  dict_size : UInt
+} derive(Eq, @debug.Debug)
+pub fn LzmaProps::from_preset(Preset) -> Self raise LzmaError
+pub fn LzmaProps::validate(Self) -> Unit raise LzmaError
+
+pub(all) struct OutputBuf {
+  data : Array[Byte]
+  mut start : Int
+}
+pub fn OutputBuf::new(size? : Int) -> Self
+pub fn OutputBuf::remaining(Self) -> Int
+pub fn OutputBuf::written(Self) -> Bytes
+
+pub(all) struct Preset {
+  level : Int
+  extreme : Bool
+} derive(Eq, @debug.Debug)
+pub fn Preset::default() -> Self
+pub fn Preset::new(Int, extreme? : Bool) -> Self raise LzmaError
+
+pub(all) enum Status {
+  Ok
+  StreamEnd
+  NeedInput
+  NeedOutput
+} derive(Eq, @debug.Debug)
+
+// Type aliases
+
+// Traits

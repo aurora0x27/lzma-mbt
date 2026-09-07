@@ -1,0 +1,7 @@
+import {
+  "aurora0x27/lzma-mbt/internal/bit",
+}
+
+import {
+  "moonbitlang/core/test",
+} for "test"

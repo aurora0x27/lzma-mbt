@@ -1,0 +1,25 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "aurora0x27/lzma-mbt/internal/coder"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn decode_lzma(BytesView, Int, Int, Int, Int, UInt64) -> Bytes raise CoderError
+
+pub fn encode_lzma(BytesView, Int, Int, Int, Int, end_marker? : Bool) -> Bytes
+
+// Errors
+pub(all) suberror CoderError {
+  Eof
+  Data
+  Limit
+  Unsupported
+} derive(Eq, @debug.Debug)
+
+// Types and methods
+
+// Type aliases
+
+// Traits

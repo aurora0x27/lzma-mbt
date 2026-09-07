@@ -1,0 +1,12 @@
+import {
+  "aurora0x27/lzma-mbt/checksum",
+  "aurora0x27/lzma-mbt/filters",
+  "aurora0x27/lzma-mbt/lzma",
+  "aurora0x27/lzma-mbt/lzma2",
+  "aurora0x27/lzma-mbt/xz",
+  "aurora0x27/lzma-mbt/internal/coder",
+}
+
+import {
+  "moonbitlang/core/test",
+} for "test"

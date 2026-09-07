@@ -1,0 +1,9 @@
+import {
+  "aurora0x27/lzma-mbt/internal/bit",
+  "aurora0x27/lzma-mbt/internal/lz",
+  "aurora0x27/lzma-mbt/internal/range_coder" @rc,
+}
+
+import {
+  "moonbitlang/core/test",
+} for "test"
