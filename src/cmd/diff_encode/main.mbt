@@ -29,7 +29,7 @@ fn mix_byte(i : Int) -> Byte {
 
 ///|
 fn mixed_bytes(n : Int) -> Bytes {
-  let arr = Array::new(capacity=n)
+  let arr = Array(capacity=n)
   for i in 0..<n {
     arr.push(mix_byte(i))
   }
@@ -75,6 +75,65 @@ fn emit_case(
   let encoded = @lzma.encode(payload[:], options~)
   println("CASE \{name}")
   println("format=\{format_name(format)}")
+  println("preset=\{preset}")
+  println("check=\{check_name(check)}")
+  println("dict=\{props.dict_size}")
+  println("plain_len=\{payload.length()}")
+  println("plain_hex=\{to_hex(payload)}")
+  println("comp_hex=\{to_hex(encoded)}")
+  println("END")
+}
+
+///|
+fn emit_xz_delta_case(
+  name : String,
+  payload : Bytes,
+  preset : Int,
+  check : @lzma.Check,
+  delta_distance : Int,
+) -> Unit raise @lzma.LzmaError {
+  let options : @lzma.EncodeOptions = {
+    format: Xz,
+    preset: { level: preset, extreme: false, },
+    check,
+    props: None,
+    filters: [],
+  }
+  let props = options.resolved_props()
+  let check_id = match check {
+    None => 0
+    Crc32 => 1
+    Crc64 => 4
+    Sha256 => 10
+  }
+  let encoded = @xz.encode_xz(
+    payload[:],
+    props.lc,
+    props.lp,
+    props.pb,
+    props.dict_size,
+    check_id~,
+    delta_distance~,
+  ) catch {
+    @coder.Data => {
+      println("ERROR DataError")
+      return
+    }
+    @coder.Eof => {
+      println("ERROR UnexpectedEof")
+      return
+    }
+    @coder.Limit => {
+      println("ERROR MemoryLimit")
+      return
+    }
+    @coder.Unsupported => {
+      println("ERROR UnsupportedFeature")
+      return
+    }
+  }
+  println("CASE \{name}")
+  println("format=xz")
   println("preset=\{preset}")
   println("check=\{check_name(check)}")
   println("dict=\{props.dict_size}")
@@ -147,6 +206,20 @@ fn main {
       @lzma.Check::Crc32,
     )
     emit_case("short_xz_p6_none", short, @lzma.Format::Xz, 6, @lzma.Check::None)
+    emit_case(
+      "short_xz_p6_sha256",
+      short,
+      @lzma.Format::Xz,
+      6,
+      @lzma.Check::Sha256,
+    )
+    emit_xz_delta_case(
+      "short_xz_delta_d1_p6_crc64",
+      short,
+      6,
+      @lzma.Check::Crc64,
+      1,
+    )
     emit_case(
       "empty_xz_p6_crc32",
       empty,

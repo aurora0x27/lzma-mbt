@@ -7,7 +7,7 @@ fn append_bytes(buf : Array[Byte], view : BytesView) -> Unit {
 
 ///|
 fn view_to_bytes(view : BytesView) -> Bytes {
-  let a = Array::new(capacity=view.length())
+  let a = Array(capacity=view.length())
   append_bytes(a, view)
   Bytes::from_array(a[:])
 }
@@ -72,7 +72,7 @@ fn encode_format(
         None => 0
         Crc32 => 1
         Crc64 => 4
-        Sha256 => raise UnsupportedFeature("SHA-256 check")
+        Sha256 => 10
       }
       @xz.encode_xz(
         input,
@@ -217,7 +217,13 @@ fn decode_body(
           limit,
           dict_size=dict_cap_from_memlimit(limit),
         )
-      Xz => @xz.decode_xz(input, limit, options.ignore_check)
+      Xz =>
+        @xz.decode_xz(
+          input,
+          limit,
+          options.ignore_check,
+          concatenated=options.concatenated,
+        )
     }
   } catch {
     @coder.Eof => raise UnexpectedEof

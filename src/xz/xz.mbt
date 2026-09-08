@@ -54,7 +54,7 @@ fn check_field_size(check_id : Int) -> Int raise @coder.CoderError {
     0 => 0
     1 => 4
     4 => 8
-    10 => raise @coder.Unsupported
+    10 => 32
     _ => raise @coder.Unsupported
   }
 }
@@ -64,8 +64,33 @@ fn write_check(w : @bit.Writer, check_id : Int, data : BytesView) -> Unit {
   match check_id {
     1 => w.write_u32_le(@checksum.crc32(data))
     4 => w.write_u64_le(@checksum.crc64(data))
+    10 => w.write_bytes(@checksum.sha256(data)[:])
     _ => ()
   }
+}
+
+///|
+fn bytes_from_view(data : BytesView) -> Bytes {
+  let out = Array(capacity=data.length())
+  for b in data {
+    out.push(b)
+  }
+  Bytes::from_array(out[:])
+}
+
+///|
+fn bytes_equal(a : BytesView, b : BytesView) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  let mut i = 0
+  while i < a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 ///|
@@ -84,18 +109,77 @@ fn bytes_to_u64_le(v : BytesView) -> UInt64 {
 
 ///|
 /// Sizes recorded for one decoded Block, used to check Index records.
-priv struct BlockSizes {
+pub struct BlockSizes {
   unpadded : UInt64
   uncompressed : UInt64
 }
 
 ///|
+priv struct BlockFilters {
+  dict_size : UInt
+  delta_distance : Int
+}
+
+///|
+priv struct BlockHeader {
+  hbytes_len : Int
+  filters : BlockFilters
+  declared_comp : UInt64?
+  declared_uncomp : UInt64?
+}
+
+///|
+fn parse_block_filters(
+  hr : @bit.Reader,
+  nfilters : Int,
+) -> BlockFilters raise @coder.CoderError {
+  if nfilters < 1 || nfilters > 2 {
+    raise @coder.Unsupported
+  }
+  let mut delta_distance = 0
+  let mut dict_size = 0U
+  let mut i = 0
+  while i < nfilters {
+    let fid = read_vli(hr)
+    let psz64 = read_vli(hr)
+    if psz64 > hr.remaining().reinterpret_as_uint().to_uint64() {
+      raise @coder.Data
+    }
+    let psz = psz64.reinterpret_as_int64().to_int()
+    let props = hr.read_exact(psz) catch { @bit.Eof => raise @coder.Eof }
+    if i == nfilters - 1 {
+      if fid == 0x03UL {
+        raise @coder.Data
+      }
+      if fid != 0x21UL {
+        raise @coder.Unsupported
+      }
+      if psz != 1 {
+        raise @coder.Data
+      }
+      dict_size = @lzma2.lzma2_dict_size(props[0])
+    } else {
+      if fid != 0x03UL {
+        raise @coder.Unsupported
+      }
+      if psz != 1 {
+        raise @coder.Data
+      }
+      delta_distance = props[0].to_int() + 1
+    }
+    i = i + 1
+  }
+  { dict_size, delta_distance, }
+}
+
+///|
 fn parse_index_and_footer(
-  data : BytesView,
+  r : @bit.Reader,
   flags : Bytes,
   blocks : Array[BlockSizes],
-) -> Unit raise @coder.CoderError {
-  let r = @bit.Reader::new(data)
+) -> Int raise @coder.CoderError {
+  let data = r.rest()
+  let start = r.position()
   let ind = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
   if ind != b'\x00' {
     raise @coder.Data
@@ -119,7 +203,7 @@ fn parse_index_and_footer(
       raise @coder.Data
     }
   }
-  let idx_len = r.position()
+  let idx_len = r.position() - start
   let stored_crc = r.read_u32_le() catch { @bit.Eof => raise @coder.Eof }
   if @checksum.crc32(data[0:idx_len]) != stored_crc {
     raise @coder.Data
@@ -166,16 +250,8 @@ fn skip_stream_padding(r : @bit.Reader) -> Unit raise @coder.CoderError {
 }
 
 ///|
-/// Decode one Block starting at the current reader position. The next byte
-/// must already have been peeked as a non-zero Block Header Size (0x00 is
-/// the Index indicator, not a Block).
-fn decode_one_block(
-  r : @bit.Reader,
-  memlimit : UInt64,
-  ignore_check : Bool,
-  check_id : Int,
-  check_n : Int,
-) -> (Bytes, UInt64) raise @coder.CoderError {
+/// Parse and validate a Block Header, leaving the data area untouched.
+fn parse_block_header(r : @bit.Reader) -> BlockHeader raise @coder.CoderError {
   let hs = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
   let header_len = (hs.to_int() + 1) * 4
   let rest_hdr = r.read_exact(header_len - 5) catch {
@@ -197,9 +273,58 @@ fn decode_one_block(
   if (bf & 0x3C) != 0 {
     raise @coder.Data
   }
-  if (bf & 0x03) != 0 {
-    raise @coder.Unsupported
+  let nfilters = (bf & 0x03) + 1
+  let mut declared_comp : UInt64? = None
+  if (bf & 0x40) != 0 {
+    declared_comp = Some(read_vli(hr))
   }
+  let mut declared_uncomp : UInt64? = None
+  if (bf & 0x80) != 0 {
+    declared_uncomp = Some(read_vli(hr))
+  }
+  let filters = parse_block_filters(hr, nfilters)
+  while hr.remaining() > 0 {
+    let z = hr.read_u8() catch { @bit.Eof => raise @coder.Eof }
+    if z != b'\x00' {
+      raise @coder.Data
+    }
+  }
+  { hbytes_len: hbytes.length(), filters, declared_comp, declared_uncomp, }
+}
+
+///|
+/// Decode one Block starting at the current reader position. The next byte
+/// must already have been peeked as a non-zero Block Header Size (0x00 is
+/// the Index indicator, not a Block).
+fn decode_one_block(
+  r : @bit.Reader,
+  memlimit : UInt64,
+  ignore_check : Bool,
+  check_id : Int,
+  check_n : Int,
+) -> (Bytes, UInt64, Int) raise @coder.CoderError {
+  let hs = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let header_len = (hs.to_int() + 1) * 4
+  let rest_hdr = r.read_exact(header_len - 5) catch {
+    @bit.Eof => raise @coder.Eof
+  }
+  let hdr_arr : Array[Byte] = [hs]
+  for b in rest_hdr {
+    hdr_arr.push(b)
+  }
+  let hbytes = Bytes::from_array(hdr_arr[:])
+  let hcrc = r.read_u32_le() catch { @bit.Eof => raise @coder.Eof }
+  if @checksum.crc32(hbytes[:]) != hcrc {
+    raise @coder.Data
+  }
+  let hr = @bit.Reader::new(hbytes[:])
+  ignore(hr.read_u8() catch { @bit.Eof => raise @coder.Eof })
+  let bflags = hr.read_u8() catch { @bit.Eof => raise @coder.Eof }
+  let bf = bflags.to_int()
+  if (bf & 0x3C) != 0 {
+    raise @coder.Data
+  }
+  let nfilters = (bf & 0x03) + 1
   let has_comp_size = (bf & 0x40) != 0
   let mut declared_comp : UInt64? = None
   if has_comp_size {
@@ -209,16 +334,7 @@ fn decode_one_block(
   if (bf & 0x80) != 0 {
     declared_uncomp = Some(read_vli(hr))
   }
-  let fid = hr.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  if fid != b'\x21' {
-    raise @coder.Unsupported
-  }
-  let psz = hr.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  if psz != b'\x01' {
-    raise @coder.Data
-  }
-  let dprop = hr.read_u8() catch { @bit.Eof => raise @coder.Eof }
-  let dict_size = @lzma2.lzma2_dict_size(dprop)
+  let filters = parse_block_filters(hr, nfilters)
   while hr.remaining() > 0 {
     let z = hr.read_u8() catch { @bit.Eof => raise @coder.Eof }
     if z != b'\x00' {
@@ -236,7 +352,18 @@ fn decode_one_block(
     }
     None => rest
   }
-  let (plain, used) = @lzma2.decode_lzma2_consumed(window, memlimit, dict_size~)
+  let (filtered, used) = @lzma2.decode_lzma2_consumed(
+    window,
+    memlimit,
+    dict_size=filters.dict_size,
+  )
+  let plain = if filters.delta_distance == 0 {
+    filtered
+  } else {
+    @filters.delta_decode(filtered[:], filters.delta_distance) catch {
+      _ => raise @coder.Data
+    }
+  }
   match declared_comp {
     Some(_) => if used != window.length() { raise @coder.Data }
     None => ()
@@ -266,6 +393,9 @@ fn decode_one_block(
       4 =>
         stored.length() == 8 &&
         @checksum.crc64(plain[:]) == bytes_to_u64_le(stored[:])
+      10 =>
+        stored.length() == 32 &&
+        bytes_equal(stored, @checksum.sha256(plain[:])[:])
       _ => false
     }
     if ok == false {
@@ -275,7 +405,374 @@ fn decode_one_block(
   let unpadded = (hbytes.length() + 4 + used + check_n)
     .reinterpret_as_uint()
     .to_uint64()
-  (plain, unpadded)
+  (plain, unpadded, r.position())
+}
+
+///|
+/// Incremental XZ container parser. It retains explicit Block payload state
+/// between calls and commits Index records only after padding, Check, and
+/// size validation. Blocks without a declared compressed size use the
+/// one-shot decoder because their payload boundary is not known yet.
+pub struct StreamDecoder {
+  mut buf : Array[Byte]
+  mut pos : Int
+  mut started : Bool
+  mut done : Bool
+  mut flags : Bytes?
+  mut check_id : Int
+  memlimit : UInt64
+  ignore_check : Bool
+  blocks : Array[BlockSizes]
+  mut active_block : Bool
+  mut active_lzma2 : @lzma2.StreamDecoder?
+  mut active_payload_remaining : Int
+  mut active_comp_total : Int
+  mut active_hbytes_len : Int
+  mut active_declared_uncomp : UInt64?
+  mut active_delta_distance : Int
+  active_plain : Array[Byte]
+  mut active_delta_history : Array[Byte]
+  mut active_delta_pos : Int
+}
+
+///|
+pub fn StreamDecoder::new(
+  memlimit : UInt64,
+  ignore_check : Bool,
+) -> StreamDecoder {
+  {
+    buf: [],
+    pos: 0,
+    started: false,
+    done: false,
+    flags: None,
+    check_id: 0,
+    memlimit,
+    ignore_check,
+    blocks: [],
+    active_block: false,
+    active_lzma2: None,
+    active_payload_remaining: 0,
+    active_comp_total: 0,
+    active_hbytes_len: 0,
+    active_declared_uncomp: None,
+    active_delta_distance: 0,
+    active_plain: [],
+    active_delta_history: [],
+    active_delta_pos: 0,
+  }
+}
+
+///|
+pub fn StreamDecoder::reset(self : StreamDecoder) -> Unit {
+  self.buf.clear()
+  self.pos = 0
+  self.started = false
+  self.done = false
+  self.flags = None
+  self.check_id = 0
+  self.blocks.clear()
+  self.active_block = false
+  self.active_lzma2 = None
+  self.active_payload_remaining = 0
+  self.active_comp_total = 0
+  self.active_hbytes_len = 0
+  self.active_declared_uncomp = None
+  self.active_delta_distance = 0
+  self.active_plain.clear()
+  self.active_delta_history.clear()
+  self.active_delta_pos = 0
+}
+
+///|
+fn StreamDecoder::available(self : StreamDecoder) -> Int {
+  self.buf.length() - self.pos
+}
+
+///|
+fn StreamDecoder::compact(self : StreamDecoder) -> Unit {
+  if self.pos > 0 && (self.pos >= 4096 || self.pos * 2 >= self.buf.length()) {
+    let next = Array(capacity=self.available())
+    for b in self.buf[self.pos:] {
+      next.push(b)
+    }
+    self.buf = next
+    self.pos = 0
+  }
+}
+
+///|
+fn StreamDecoder::suffix(self : StreamDecoder) -> Bytes {
+  let out = Array(capacity=self.available())
+  for b in self.buf[self.pos:] {
+    out.push(b)
+  }
+  Bytes::from_array(out[:])
+}
+
+///|
+fn StreamDecoder::read_header(
+  self : StreamDecoder,
+) -> Unit raise @coder.CoderError {
+  if self.available() < 12 {
+    raise @coder.Eof
+  }
+  let m = self.buf[self.pos:self.pos + 6]
+  if m[0] != b'\xFD' ||
+    m[1] != b'\x37' ||
+    m[2] != b'\x7A' ||
+    m[3] != b'X' ||
+    m[4] != b'Z' ||
+    m[5] != b'\x00' {
+    raise @coder.Data
+  }
+  let f0 = self.buf[self.pos + 6]
+  let f1 = self.buf[self.pos + 7]
+  if f0 != b'\x00' {
+    raise @coder.Data
+  }
+  let flags = Bytes::from_array([f0, f1][:])
+  let crc_bytes = Array(capacity=4)
+  for b in self.buf[self.pos + 8:self.pos + 12] {
+    crc_bytes.push(b)
+  }
+  let stored = bytes_to_u32_le(Bytes::from_array(crc_bytes[:])[:])
+  if @checksum.crc32(flags[:]) != stored {
+    raise @coder.Data
+  }
+  self.flags = Some(flags)
+  self.check_id = f1.to_int()
+  check_field_size(self.check_id) |> ignore
+  self.pos = self.pos + 12
+  self.started = true
+}
+
+///|
+fn StreamDecoder::append_active_output(
+  self : StreamDecoder,
+  filtered : Bytes,
+  out : @bit.Writer,
+) -> Unit raise @coder.CoderError {
+  if self.active_block == false {
+    raise @coder.Data
+  }
+  if self.active_delta_distance == 0 {
+    for b in filtered[:] {
+      self.active_plain.push(b)
+    }
+    out.write_bytes(filtered[:])
+    return
+  }
+  let distance = self.active_delta_distance
+  if self.active_delta_history.length() == 0 {
+    self.active_delta_history = Array::make(distance, b'\x00')
+  }
+  let decoded = @bit.Writer::new()
+  for b in filtered[:] {
+    let prev = self.active_delta_history[self.active_delta_pos].to_int()
+    let value = ((b.to_int() + prev) & 0xFF).to_byte()
+    self.active_delta_history[self.active_delta_pos] = value
+    self.active_delta_pos = (self.active_delta_pos + 1) % distance
+    self.active_plain.push(value)
+    decoded.write_u8(value)
+  }
+  out.write_bytes(decoded.to_bytes()[:])
+}
+
+///|
+fn StreamDecoder::active_check_ok(self : StreamDecoder) -> Bool {
+  let plain = Bytes::from_array(self.active_plain[:])
+  match self.active_declared_uncomp {
+    Some(n) => if n != plain.length().to_uint64() { return false }
+    None => ()
+  }
+  true
+}
+
+///|
+fn StreamDecoder::clear_active(self : StreamDecoder) -> Unit {
+  self.active_block = false
+  self.active_lzma2 = None
+  self.active_payload_remaining = 0
+  self.active_plain.clear()
+  self.active_delta_history.clear()
+  self.active_delta_pos = 0
+}
+
+///|
+fn StreamDecoder::finish_active(
+  self : StreamDecoder,
+  out : @bit.Writer,
+) -> Unit raise @coder.CoderError {
+  if self.active_block == false {
+    raise @coder.Data
+  }
+  let comp = self.active_comp_total
+  let pad = (4 - comp % 4) % 4
+  if self.available() < pad + check_field_size(self.check_id) {
+    raise @coder.Eof
+  }
+  for _ in 0..<pad {
+    if self.buf[self.pos] != b'\x00' {
+      raise @coder.Data
+    }
+    self.pos = self.pos + 1
+  }
+  let stored = Bytes::from_array(
+    self.buf[self.pos:self.pos + check_field_size(self.check_id)],
+  )
+  let plain = Bytes::from_array(self.active_plain[:])
+  if self.ignore_check == false {
+    let ok = match self.check_id {
+      0 => true
+      1 => @checksum.crc32(plain[:]) == bytes_to_u32_le(stored)
+      4 => @checksum.crc64(plain[:]) == bytes_to_u64_le(stored)
+      10 => bytes_equal(stored, @checksum.sha256(plain[:])[:])
+      _ => false
+    }
+    if ok == false {
+      raise @coder.Data
+    }
+  }
+  self.pos = self.pos + check_field_size(self.check_id)
+  if self.active_check_ok() == false {
+    raise @coder.Data
+  }
+  self.blocks.push({
+    unpadded: (self.active_hbytes_len +
+    4 +
+    comp +
+    check_field_size(self.check_id))
+    .reinterpret_as_uint()
+    .to_uint64(),
+    uncompressed: plain.length().to_uint64(),
+  })
+  self.clear_active()
+  self.compact()
+  ignore(out)
+}
+
+///|
+pub fn StreamDecoder::feed(
+  self : StreamDecoder,
+  input : BytesView,
+) -> (Bytes, Bool) raise @coder.CoderError {
+  if self.done && input.length() > 0 {
+    raise @coder.Data
+  }
+  for b in input {
+    self.buf.push(b)
+  }
+  let out = @bit.Writer::new()
+  if self.started == false {
+    self.read_header() catch {
+      @coder.Eof => return (out.to_bytes(), false)
+      err => raise err
+    }
+  }
+  let flags = match self.flags {
+    None => raise @coder.Data
+    Some(v) => v
+  }
+  while self.done == false {
+    if self.available() < 1 {
+      break
+    }
+    if self.active_block {
+      let decoder = match self.active_lzma2 {
+        None => raise @coder.Data
+        Some(v) => v
+      }
+      if self.active_payload_remaining > 0 {
+        let take = if self.available() < self.active_payload_remaining {
+          self.available()
+        } else {
+          self.active_payload_remaining
+        }
+        let chunk = Bytes::from_array(self.buf[self.pos:self.pos + take])
+        self.pos = self.pos + take
+        self.active_payload_remaining = self.active_payload_remaining - take
+        let (filtered, done) = decoder.feed(chunk[:])
+        self.append_active_output(filtered, out)
+        if self.active_payload_remaining == 0 && done == false {
+          raise @coder.Data
+        }
+        if self.active_payload_remaining > 0 {
+          break
+        }
+      }
+      self.finish_active(out) catch {
+        @coder.Eof => break
+        err => raise err
+      }
+      continue
+    }
+    let suffix = self.suffix()
+    if suffix[0] == b'\x00' {
+      let r = @bit.Reader::new(suffix[:])
+      let used = parse_index_and_footer(r, flags, self.blocks) catch {
+        @coder.Eof => break
+        err => raise err
+      }
+      self.pos = self.pos + used
+      self.done = true
+      break
+    }
+    let r = @bit.Reader::new(suffix[:])
+    let header = parse_block_header(r) catch {
+      @coder.Eof => break
+      err => raise err
+    }
+    let comp = match header.declared_comp {
+      Some(n) => n.reinterpret_as_int64().to_int()
+      None => {
+        let (plain, unpadded, used) = decode_one_block(
+          @bit.Reader::new(suffix[:]),
+          self.memlimit,
+          self.ignore_check,
+          self.check_id,
+          check_field_size(self.check_id),
+        ) catch {
+          @coder.Eof => break
+          err => raise err
+        }
+        out.write_bytes(plain[:])
+        self.blocks.push({ unpadded, uncompressed: plain.length().to_uint64(), })
+        self.pos = self.pos + used
+        self.compact()
+        continue
+      }
+    }
+    if comp < 1 {
+      raise @coder.Data
+    }
+    let decoder = @lzma2.StreamDecoder::new(
+      self.memlimit,
+      dict_size=header.filters.dict_size,
+    )
+    self.active_block = true
+    self.active_lzma2 = Some(decoder)
+    self.active_payload_remaining = comp
+    self.active_comp_total = comp
+    self.active_hbytes_len = header.hbytes_len
+    self.active_declared_uncomp = header.declared_uncomp
+    self.active_delta_distance = header.filters.delta_distance
+    self.active_plain.clear()
+    self.active_delta_history.clear()
+    self.active_delta_pos = 0
+    self.pos = self.pos + r.position()
+  }
+  (out.to_bytes(), self.done)
+}
+
+///|
+pub fn StreamDecoder::finish(
+  self : StreamDecoder,
+) -> Bytes raise @coder.CoderError {
+  if self.done == false {
+    raise @coder.Eof
+  }
+  b""
 }
 
 ///|
@@ -286,20 +783,36 @@ pub fn encode_xz(
   pb : Int,
   dict_size : UInt,
   check_id? : Int = 4,
+  delta_distance? : Int = 0,
 ) -> Bytes raise @coder.CoderError {
   // A single Block is enough for a well-formed stream; multi-Block splitting
   // is not required for decoder compatibility (see docs/research/xz.md).
   let check_n = check_field_size(check_id)
-  let payload = @lzma2.encode_lzma2(input, lc, lp, pb, dict_size)
+  if delta_distance < 0 || delta_distance > 256 {
+    raise @coder.Data
+  }
+  let filtered = if delta_distance == 0 {
+    bytes_from_view(input)
+  } else {
+    @filters.delta_encode(input, delta_distance) catch {
+      _ => raise @coder.Data
+    }
+  }
+  let payload = @lzma2.encode_lzma2(filtered[:], lc, lp, pb, dict_size)
   let flags = Bytes::from_array([b'\x00', check_id.to_byte()][:])
   let w = @bit.Writer::new()
   w.write_bytes(b"\xFD\x37\x7A\x58\x5A\x00"[:])
   w.write_bytes(flags[:])
   w.write_u32_le(@checksum.crc32(flags[:]))
   let content = @bit.Writer::new()
-  content.write_u8(b'\xC0')
+  content.write_u8(if delta_distance == 0 { b'\xC0' } else { b'\xC1' })
   write_vli(content, payload.length().reinterpret_as_uint().to_uint64())
   write_vli(content, input.length().reinterpret_as_uint().to_uint64())
+  if delta_distance != 0 {
+    content.write_u8(b'\x03')
+    content.write_u8(b'\x01')
+    content.write_u8((delta_distance - 1).to_byte())
+  }
   content.write_u8(b'\x21')
   content.write_u8(b'\x01')
   content.write_u8(@lzma2.lzma2_dict_prop(dict_size))
@@ -344,8 +857,32 @@ pub fn decode_xz(
   input : BytesView,
   memlimit : UInt64,
   ignore_check : Bool,
+  concatenated? : Bool = false,
 ) -> Bytes raise @coder.CoderError {
   let r = @bit.Reader::new(input)
+  let out = @bit.Writer::new()
+  let mut done = false
+  while done == false {
+    out.write_bytes(decode_xz_stream(r, memlimit, ignore_check)[:])
+    if concatenated == false {
+      if r.remaining() != 0 {
+        raise @coder.Data
+      }
+      done = true
+    } else {
+      skip_stream_padding(r)
+      done = r.remaining() == 0
+    }
+  }
+  out.to_bytes()
+}
+
+///|
+fn decode_xz_stream(
+  r : @bit.Reader,
+  memlimit : UInt64,
+  ignore_check : Bool,
+) -> Bytes raise @coder.CoderError {
   let m0 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
   let m1 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
   let m2 = r.read_u8() catch { @bit.Eof => raise @coder.Eof }
@@ -382,7 +919,7 @@ pub fn decode_xz(
     if r.rest()[0] == b'\x00' {
       break
     }
-    let (plain, unpadded) = decode_one_block(
+    let (plain, unpadded, _) = decode_one_block(
       r, memlimit, ignore_check, check_id, check_n,
     )
     recs.push({
@@ -391,6 +928,6 @@ pub fn decode_xz(
     })
     out.write_bytes(plain[:])
   }
-  parse_index_and_footer(r.rest(), flags, recs)
+  parse_index_and_footer(r, flags, recs) |> ignore
   out.to_bytes()
 }

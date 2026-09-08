@@ -37,6 +37,38 @@ test "encode_decode_direct_bits" {
 }
 
 ///|
+test "decoder_appends_input_and_retries_after_eof" {
+  let bits = [
+    0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0,
+    1, 1, 1, 0, 0, 1,
+  ]
+  let enc = RangeEncoder::new()
+  let probs = fill_probs(1)
+  for b in bits {
+    enc.encode_bit(probs, 0, b)
+  }
+  let bytes = enc.flush()
+  let dec = RangeDecoder::new(bytes[:5])
+  let dprobs = fill_probs(1)
+  let mut retried = false
+  for b in bits {
+    let got = dec.decode_bit(dprobs, 0) catch {
+      Eof => {
+        retried = true
+        dec.append(bytes[5:])
+        dec.decode_bit(dprobs, 0)
+      }
+      Data => {
+        assert_true(false)
+        0
+      }
+    }
+    assert_eq(got, b)
+  }
+  assert_true(retried)
+}
+
+///|
 test "truncated_init_is_eof" {
   let err = @test.expect_error(() => RangeDecoder::new(b"\x00\x01"[:]) |> ignore)
   assert_true(err is Eof)

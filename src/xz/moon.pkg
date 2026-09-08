@@ -1,5 +1,6 @@
 import {
   "aurora0x27/lzma-mbt/checksum",
+  "aurora0x27/lzma-mbt/filters",
   "aurora0x27/lzma-mbt/internal/bit",
   "aurora0x27/lzma-mbt/internal/coder",
   "aurora0x27/lzma-mbt/lzma2",

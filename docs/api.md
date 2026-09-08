@@ -22,7 +22,7 @@
 3. **输入借用、输出拥有**：输入用 `BytesView`；函数返回的 `Bytes` 由调用方拥有。流式 `code` 写入调用方提供的输出缓冲。
 4. **错误用 `raise`**：统一 `suberror LzmaError`（MoonBit 保留名 `Error`）。不要用整数码，不要用 `Result` 作为主通道。
 5. **默认值要安全**：解码 `memlimit = None` 表示字典 **128 MiB**；编码默认 `.xz` + preset 6 + CRC64。
-6. **流式切分无关**：合法输入可按任意 chunk 经 `write` 再 `finish`（或 `code(..., Run)` 缓冲后 `code(..., Finish)`）解码，结果与一次性 `decode` 相同。当前实现在 `Finish` 前整段缓冲，不是按字节推进的 LZMA 状态机。
+6. **流式切分无关**：合法输入可按任意 chunk 经 `write` 再 `finish` 解码，结果与一次性 `decode` 相同。`Decoder::code(..., Run)` 在累计输入已构成完整流时可以提前提交输出；编码器仍在 `Finish` 前缓冲输入，LZMA/LZMA2 压缩 payload 内部也尚未实现可暂停的 range-coder 状态。
 7. **未实现即报错**：过滤器、check 类型、preset 若不支持，返回 `UnsupportedFeature`，禁止假装成功。
 
 ---
@@ -121,12 +121,12 @@ pub(all) enum Check {
   None
   Crc32
   Crc64
-  /// 枚举占位；编解码均抛 `UnsupportedFeature`。
+  /// XZ Check ID 0x0A，32 字节 SHA-256 摘要。
   Sha256
 } derive(Debug, Eq)
 
 pub(all) enum Action {
-  /// 追加输入到内部缓冲。本版本在 `Finish` 前不产生压缩/解压输出。
+  /// 追加输入。解码器在完整流可验证时可以提前产生输出；编码器在 `Finish` 前仍缓冲输入。
   Run
   /// 本版本不支持，`code` 抛 `InvalidConfiguration`。
   SyncFlush
@@ -141,7 +141,7 @@ pub(all) enum Status {
   Ok
   /// `Finish` 完成，待写出字节已全部排空。
   StreamEnd
-  /// 留给将来的增量状态机；当前 `Run` 返回 `Ok`，不会发出此状态。
+  /// 当前累计输入不足以完成解码，需要更多输入。
   NeedInput
   /// 输出缓冲已满，调用方取走数据后再 `code` 或 `finish()`。
   NeedOutput
@@ -150,7 +150,7 @@ pub(all) enum Status {
 
 `Action`：本版本只支持 `Run` 与 `Finish`。`SyncFlush` / `FullFlush` → `InvalidConfiguration`。
 
-`Status`：`Finish` 之前的 `Run` 返回 `Ok`（输入被缓冲，尚无压缩/解压输出）。`NeedInput` 留给将来的增量状态机；当前实现在 `Finish` 前整段缓冲，因此不会发出 `NeedInput`。`Finish` 之后是 `NeedOutput` 或 `StreamEnd`。页脚后的多余字节、裸 LZMA2 尾部垃圾按 `DataError` 拒绝。
+`Status`：`Run` 会根据当前阶段返回 `NeedInput`、`NeedOutput` 或 `StreamEnd`；编码器在 `Finish` 前通常返回 `NeedInput`，解码器在完整流可验证后可以提前返回 `StreamEnd`。`Finish` 之后是 `NeedOutput` 或 `StreamEnd`。页脚后的多余字节、裸 LZMA2 尾部垃圾按 `DataError` 拒绝。
 
 ---
 
@@ -203,7 +203,7 @@ pub(all) struct DecodeOptions {
   format : Format
   /// 解码器字典/状态内存上限（字节）。None → 128 MiB。不限制明文长度。
   memlimit : UInt64?
-  /// 是否解码连接的多 Stream（.xz concatenated）。对齐 LZMA_CONCATENATED。
+  /// 是否解码连接的多 Stream（.xz concatenated）。仅对 Format::Xz / Auto 识别出的 .xz 生效。
   concatenated : Bool
   /// 跳过完整性校验。默认 false。仅用于调试或已由外层校验的场景。
   ignore_check : Bool
@@ -238,14 +238,15 @@ pub(all) enum FilterSpec {
 
 - `Format::Auto` 不能用于 `encode` → `InvalidConfiguration`
 - `lc + lp > 4` 或越界、`dict_size` 越界 → `InvalidConfiguration`
-- `Preset.extreme`、`Check::Sha256`、`concatenated` → `UnsupportedFeature`
+- `Preset.extreme` → `UnsupportedFeature`
 - 链里的 `Lzma1`/`Lzma2`、Delta `distance` 不在 `1..=256` → `InvalidConfiguration`
 - `.xz` + `Check::None` 允许，且必须能被解码器识别
-- 根包 `filters` 是**额外**前后处理（先 Delta/BCJ，再交给容器编解码）。`.xz` 容器内过滤器仍由 Block Header 描述，本版本只写 LZMA2
+- 根包 `filters` 是**额外**前后处理（先 Delta/BCJ，再交给容器编解码）。`.xz` Block Header 内过滤器由 `xz` 包独立处理；本版本支持 LZMA2，以及 Delta -> LZMA2
 - `memlimit` 限制**解码字典/状态内存**（`None` → 128 MiB），不限制解压后明文长度。裸 LZMA2 流内没有字典字段，用 `min(memlimit, MAX_DICT_SIZE)` 作为字典上限。LZMA_Alone 头里过小的 dict 会先上取整到 4096 再与 `memlimit` 比较
 - `Format::Auto` 只认 `.xz` 魔数与合法 LZMA_Alone 属性字节（`lc+lp <= 4`）。典型裸 LZMA2（控制字节 `0xE0`）→ `FormatError`，须显式 `Format::Lzma2`。显式 `Format::Lzma` 时，长度 ≥ 13 且属性字节不合法同样 → `FormatError`；更短的截断头由解码器报 `UnexpectedEof`。`Auto` 下：不完整 `.xz` 魔数前缀，或长度 `1..=12` 且首字节是合法 LZMA 属性 → `UnexpectedEof`。显式 `Format::Xz` 且输入短于 6 字节 → `UnexpectedEof`
 - `EncodeOptions.check` 只作用于 `Format::Xz`；LZMA / LZMA2 裸流忽略该字段
 - XZ VLI 必须是最短编码；Block Header 在过滤器属性之后的填充必须为 0
+- `DecodeOptions.concatenated=true` 只改变 `.xz` 容器的 Footer 后行为：解完一个 Stream 后跳过 Stream Padding，再解析下一个 `.xz` Stream。Stream Padding 只能是 null 字节，且长度必须为 4 的倍数。默认 `false` 时仍拒绝 Footer 后任何字节。对裸 LZMA / LZMA2，该选项不启用拼接语义，尾部垃圾行为保持各自解码器原样。
 - `BcjX86.start_offset` 是 32 位指令指针初值，按无符号环绕（与 C `uint32_t` 一致）
 
 ---
@@ -298,12 +299,14 @@ pub fn decode_lzma2_consumed(input, memlimit, dict_size?) -> (Bytes, Int) raise 
 // `decode_lzma2_consumed` 返回消费的压缩字节数，供 `.xz` Block 后面的 Padding/Check/Index 继续解析
 
 // aurora0x27/lzma-mbt/xz
-pub fn encode_xz(..., check_id? : Int = 4) -> Bytes raise CoderError
-pub fn decode_xz(input, memlimit, ignore_check : Bool) -> Bytes raise CoderError
-// Stream Footer `YZ` 之后若仍有字节 → Data（含未声明的 concatenated 流）
+pub fn encode_xz(..., check_id? : Int = 4, delta_distance? : Int = 0) -> Bytes raise CoderError
+pub fn decode_xz(input, memlimit, ignore_check : Bool, concatenated? : Bool = false) -> Bytes raise CoderError
+// concatenated=false 时，Stream Footer `YZ` 之后若仍有字节 → Data
+// concatenated=true 时，Footer 后可跟规范 Stream Padding 与下一个 .xz Stream
+// delta_distance=0 时只写 LZMA2；1..=256 时写 Delta(ID 0x03, 属性 distance-1) + LZMA2
 ```
 
-根包 `encode`/`decode` 按 `options.format` 分派到这些函数。`check_id` 只接受 `0` / `1` / `4`。
+根包 `encode`/`decode` 按 `options.format` 分派到这些函数。`check_id` 只接受 `0` / `1` / `4` / `10`。
 
 ---
 
@@ -382,7 +385,7 @@ pub(all) struct OutputBuf {
 包装方法：
 
 ```moonbit
-/// 追加输入。不产生输出；压缩/解压发生在 `finish` 或 `code(..., Finish)`。
+/// 追加输入。`write` 本身不返回输出；结果通过 `finish` 取得。
 pub fn Encoder::write(self : Encoder, input : BytesView) -> Unit raise LzmaError
 pub fn Encoder::finish(self : Encoder) -> Bytes raise LzmaError
 pub fn Decoder::write(self : Decoder, input : BytesView) -> Unit raise LzmaError
@@ -391,7 +394,7 @@ pub fn Decoder::finish(self : Decoder) -> Bytes raise LzmaError
 
 `write`/`finish` 与 `code` 共用同一 `encode`/`decode`，没有第二套编解码器。流式在 `Finish` 前缓冲全部输入。`write` 与 `code` 的 `input` 都会追加到内部缓冲，不要把同一段数据喂两次。
 
-`code(..., Finish)` 若因输出槽不足返回 `NeedOutput`，可继续 `code` 排空，或调用 `finish()` 取走剩余未写出字节。已经 `StreamEnd`（或 `finish()` 已返回完整结果）后再 `finish()` → `InvalidConfiguration`。
+`code(..., Finish)` 若因输出槽不足返回 `NeedOutput`，可继续 `code` 排空，或调用 `finish()` 取走剩余未写出字节。已经 `StreamEnd`（或 `finish()` 已返回完整结果）后再 `finish()` → `InvalidConfiguration`。`write` + `finish` 仍是缓冲式兼容外壳。
 
 `Finish` 已提交、输出尚未排空（`NeedOutput`）：
 
@@ -421,13 +424,13 @@ MoonBit 无析构器义务对应 `lzma_end`：对象不可达后由运行时回�
 
 ### 流式不变量（测试必须覆盖）
 
-当前实现在 `Finish` 前缓冲全部输入，`code(..., Run)` 只追加缓冲并返回 `Ok`，不解码。对任意合法输入 `bytes` 和任意切分 `chunks`（拼接等于 `bytes`）：
+`write` + `finish` 对任意合法输入 `bytes` 和任意切分 `chunks`（拼接等于 `bytes`）保持以下不变量：
 
 ```text
 decode(bytes) == Decoder::write(chunks...) ; Decoder::finish()
 ```
 
-`code(..., Finish)` 与 `write` + `finish` 结果相同。不要把 `Run` 当成按块推进的 LZMA 状态机。
+`code(..., Finish)` 与 `write` + `finish` 结果相同。解码器的 `Run` 会在完整流可验证时尝试提交结果，并可通过 `NeedOutput` 分次排空；编码器的 `Run` 目前只消费并累计输入，压缩结果在 `Finish` 时生成。
 
 还要覆盖：
 
@@ -462,6 +465,7 @@ pub const UNKNOWN_SIZE : UInt64 = 0xFFFF_FFFF_FFFF_FFFF
 ```moonbit
 pub fn crc32(data : BytesView, init? : UInt = 0) -> UInt
 pub fn crc64(data : BytesView, init? : UInt64 = 0) -> UInt64
+pub fn sha256(data : BytesView) -> Bytes
 ```
 
 多项式、初值、反射、最终异或必须与 `liblzma` / ISO 实现差分一致。`init` 用于分块累加：
@@ -470,7 +474,7 @@ pub fn crc64(data : BytesView, init? : UInt64 = 0) -> UInt64
 crc32(a ++ b) == crc32(b, init=crc32(a))
 ```
 
-SHA-256 列在 `Check` 里但对编码/解码都返回 `UnsupportedFeature`。
+`sha256` 从根包和 checksum 包导出，返回 32 字节大端摘要。checksum 包还导出 `Sha256State::{new, update, finish}` 用于真正分块计算；根包只重导出一次性 `sha256`。SHA-256 的 digest 本身不是可恢复的分块状态，因此没有 `init` 参数。
 
 ---
 
@@ -523,7 +527,7 @@ fn decompress_chunks(chunks : Array[Bytes]) -> Bytes raise LzmaError {
 }
 ```
 
-需要 `NeedOutput` 时再用 `Decoder::code` 与调用方 `OutputBuf`。`Run` 在 `Finish` 前返回 `Ok`，不产生明文。
+需要 `NeedOutput` 时再用 `Decoder::code` 与调用方 `OutputBuf`。`Run` 在累计输入不足时返回 `NeedInput`；裸 LZMA2 与声明压缩大小的单 Stream XZ Block 都可在压缩 payload 内按符号推进，`.lzma` 以及带根级额外 filters 的 XZ 仍在容器完成后提交明文。
 
 根包黑盒测试覆盖上述循环（`src/api_test.mbt`）。
 
@@ -557,8 +561,8 @@ fn decompress_chunks(chunks : Array[Bytes]) -> Bytes raise LzmaError {
 3. `OutputBuf` 为调用方 `Array[Byte]` + `start`；`OutputBuf::new(size=n)` 分配 n 个可写槽。
 4. 一次性 LZMA_Alone 写真实未压缩大小。
 5. 错误按标签匹配；`String` 载荷不是稳定 API。
-6. 单 Stream `.xz` 在 Footer 之后不得有剩余字节；裸 LZMA2 在结束标记之后同样不得有剩余字节。
-7. `.xz` 解码器接受 0..N 个 Block；Index 记录必须与各 Block 的 Unpadded Size / Uncompressed Size 逐条一致。编码器当前仍只写 1 个 Block。Block Header 里的 Compressed Size 与 Uncompressed Size（编码器两者都写）必须与 LZMA2 消费字节数 / 明文长度一致。VLI 禁止非最短编码。
+6. 单 Stream `.xz` 在 Footer 之后不得有剩余字节，除非 `DecodeOptions.concatenated=true`；裸 LZMA2 在结束标记之后同样不得有剩余字节。
+7. `.xz` 解码器接受 0..N 个 Block；Index 记录必须与各 Block 的 Unpadded Size / Uncompressed Size 逐条一致。编码器当前仍只写 1 个 Block。Block Header 里的 Compressed Size 与 Uncompressed Size（编码器两者都写）必须与 LZMA2 消费字节数 / 最终明文长度一致。VLI 禁止非最短编码。Check 支持 None / CRC32 / CRC64 / SHA-256。Block Header 内过滤器支持 LZMA2 与 Delta -> LZMA2；根包 `EncodeOptions.filters` / `DecodeOptions.filters` 仍表示容器外额外变换。
 
 ---
 

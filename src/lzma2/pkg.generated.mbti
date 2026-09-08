@@ -19,6 +19,18 @@ pub fn lzma2_dict_size(Byte) -> UInt raise @coder.CoderError
 // Errors
 
 // Types and methods
+pub struct StreamDecoder {
+  mut buf : Array[Byte]
+  mut pos : Int
+  dec : @coder.LzmaDec
+  mut need_dict_reset : Bool
+  mut need_props : Bool
+  mut ended : Bool
+}
+pub fn StreamDecoder::feed(Self, BytesView) -> (Bytes, Bool) raise @coder.CoderError
+pub fn StreamDecoder::finish(Self) -> Bytes raise @coder.CoderError
+pub fn StreamDecoder::new(UInt64, dict_size? : UInt) -> Self raise @coder.CoderError
+pub fn StreamDecoder::reset(Self) -> Unit
 
 // Type aliases
 

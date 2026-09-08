@@ -1,6 +1,7 @@
 import {
   "aurora0x27/lzma-mbt/internal/bit",
   "aurora0x27/lzma-mbt/internal/coder",
+  "aurora0x27/lzma-mbt/internal/range_coder" @rc,
 }
 
 import {

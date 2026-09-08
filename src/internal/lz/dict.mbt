@@ -16,6 +16,16 @@ pub fn Dict::new(size : Int) -> Dict {
 }
 
 ///|
+/// Copy the dictionary cursor, fill count, and bytes for a decoder checkpoint.
+pub fn Dict::clone(self : Dict) -> Dict {
+  let buf = Array::make(self.buf.length(), b'\x00')
+  for i in 0..<self.buf.length() {
+    buf[i] = self.buf[i]
+  }
+  { buf, cyclic: self.cyclic, filled: self.filled, }
+}
+
+///|
 pub fn Dict::reset(self : Dict) -> Unit {
   self.cyclic = 0
   self.filled = 0

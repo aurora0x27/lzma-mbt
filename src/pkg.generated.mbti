@@ -26,6 +26,8 @@ pub fn encode(BytesView, options? : EncodeOptions) -> Bytes raise LzmaError
 
 pub fn pack_props(Int, Int, Int) -> Byte raise LzmaError
 
+pub fn sha256(BytesView) -> Bytes
+
 pub fn unpack_props(Byte) -> (Int, Int, Int) raise LzmaError
 
 // Errors

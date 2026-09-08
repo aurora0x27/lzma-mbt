@@ -54,6 +54,8 @@ pub(all) struct CodeResult {
 priv struct Session {
   input : Array[Byte]
   pending : Array[Byte]
+  stream_decoder : @lzma2.StreamDecoder?
+  xz_decoder : @xz.StreamDecoder?
   mut pending_pos : Int
   mut finished : Bool
   mut complete : Bool
@@ -74,10 +76,15 @@ struct Decoder {
 }
 
 ///|
-fn Session::fresh() -> Session {
+fn Session::fresh(
+  stream_decoder? : @lzma2.StreamDecoder? = None,
+  xz_decoder? : @xz.StreamDecoder? = None,
+) -> Session {
   {
     input: [],
     pending: [],
+    stream_decoder,
+    xz_decoder,
     pending_pos: 0,
     finished: false,
     complete: false,
@@ -95,6 +102,14 @@ fn Session::clear(self : Session) -> Unit {
   self.complete = false
   self.total_in = 0UL
   self.total_out = 0UL
+  match self.stream_decoder {
+    None => ()
+    Some(dec) => dec.reset()
+  }
+  match self.xz_decoder {
+    None => ()
+    Some(dec) => dec.reset()
+  }
 }
 
 ///|
@@ -105,6 +120,13 @@ fn add_count(total : UInt64, n : Int) -> UInt64 {
 ///|
 fn fill_pending(pending : Array[Byte], src : Bytes) -> Unit {
   pending.clear()
+  for b in src[:] {
+    pending.push(b)
+  }
+}
+
+///|
+fn append_pending(pending : Array[Byte], src : Bytes) -> Unit {
   for b in src[:] {
     pending.push(b)
   }
@@ -135,7 +157,7 @@ fn pending_status(
   output : OutputBuf,
 ) -> Status raise LzmaError {
   if done == false {
-    return Ok
+    return NeedInput
   }
   if pending_pos >= pending_len {
     return StreamEnd
@@ -185,6 +207,7 @@ fn Session::code(
   action : Action,
   produce : (Bytes) -> Bytes raise LzmaError,
   kind : String,
+  run_can_finish? : Bool = false,
 ) -> CodeResult raise LzmaError {
   check_output(output)
   reject_unsupported_action(action)
@@ -202,6 +225,102 @@ fn Session::code(
   }
   let consumed = input.length()
   self.total_in = add_count(self.total_in, consumed)
+  match self.stream_decoder {
+    Some(decoder) => {
+      let (produced_bytes, done0) = decoder.feed(input) catch {
+        @coder.Eof => raise UnexpectedEof
+        @coder.Data => raise DataError
+        @coder.Limit => raise MemoryLimit
+        @coder.Unsupported => raise UnsupportedFeature("lzma2 feature")
+      }
+      let mut done = done0
+      append_pending(self.pending, produced_bytes)
+      if action is Finish && done == false {
+        let _ = decoder.finish() catch {
+          @coder.Eof => raise UnexpectedEof
+          @coder.Data => raise DataError
+          @coder.Limit => raise MemoryLimit
+          @coder.Unsupported => raise UnsupportedFeature("lzma2 feature")
+        }
+        done = true
+      }
+      self.complete = done
+      self.finished = done
+      let (produced, new_pos) = drain_pending(
+        self.pending,
+        self.pending_pos,
+        output,
+      )
+      self.pending_pos = new_pos
+      self.total_out = add_count(self.total_out, produced)
+      let status = pending_status(
+        self.complete,
+        self.pending_pos,
+        self.pending.length(),
+        output,
+      )
+      return { consumed, produced, status, }
+    }
+    None => ()
+  }
+  match self.xz_decoder {
+    Some(decoder) => {
+      let (produced_bytes, done0) = decoder.feed(input) catch {
+        @coder.Eof => raise UnexpectedEof
+        @coder.Data => raise DataError
+        @coder.Limit => raise MemoryLimit
+        @coder.Unsupported => raise UnsupportedFeature("xz feature")
+      }
+      let mut done = done0
+      append_pending(self.pending, produced_bytes)
+      if action is Finish && done == false {
+        let _ = decoder.finish() catch {
+          @coder.Eof => raise UnexpectedEof
+          @coder.Data => raise DataError
+          @coder.Limit => raise MemoryLimit
+          @coder.Unsupported => raise UnsupportedFeature("xz feature")
+        }
+        done = true
+      }
+      self.complete = done
+      self.finished = done
+      let (produced, new_pos) = drain_pending(
+        self.pending,
+        self.pending_pos,
+        output,
+      )
+      self.pending_pos = new_pos
+      self.total_out = add_count(self.total_out, produced)
+      let status = pending_status(
+        self.complete,
+        self.pending_pos,
+        self.pending.length(),
+        output,
+      )
+      return { consumed, produced, status, }
+    }
+    None => ()
+  }
+  if action is Run &&
+    run_can_finish &&
+    self.complete == false &&
+    self.input.length() > 0 {
+    let src = Bytes::from_array(self.input[:])
+    let mut run_complete = true
+    let out = produce(src) catch {
+      UnexpectedEof => {
+        run_complete = false
+        b""
+      }
+      err => raise err
+    }
+    if run_complete {
+      fill_pending(self.pending, out)
+      self.pending_pos = 0
+      self.complete = true
+      self.finished = true
+    }
+  }
   if action is Finish && self.complete == false {
     let src = Bytes::from_array(self.input[:])
     fill_pending(self.pending, produce(src))
@@ -277,7 +396,36 @@ pub fn Decoder::new(
   options? : DecodeOptions = DecodeOptions::default(),
 ) -> Decoder raise LzmaError {
   options.validate()
-  { options, session: Session::fresh(), }
+  let stream_decoder = match options.format {
+    Lzma2 => {
+      let limit = effective_memlimit(options.memlimit)
+      Some(
+        @lzma2.StreamDecoder::new(
+          limit,
+          dict_size=dict_cap_from_memlimit(limit),
+        ) catch {
+          @coder.Eof => raise UnexpectedEof
+          @coder.Data => raise DataError
+          @coder.Limit => raise MemoryLimit
+          @coder.Unsupported => raise UnsupportedFeature("lzma2 feature")
+        },
+      )
+    }
+    Auto | Lzma | Xz => None
+  }
+  let xz_decoder : @xz.StreamDecoder? = if options.format == Format::Xz &&
+    options.concatenated == false &&
+    options.filters.length() == 0 {
+    Some(
+      @xz.StreamDecoder::new(
+        effective_memlimit(options.memlimit),
+        options.ignore_check,
+      ),
+    )
+  } else {
+    None
+  }
+  { options, session: Session::fresh(stream_decoder~, xz_decoder~), }
 }
 
 ///|
@@ -343,6 +491,7 @@ pub fn Decoder::code(
     action,
     (src : Bytes) => decode(src[:], options~),
     "decoder",
+    run_can_finish=true,
   )
 }
 

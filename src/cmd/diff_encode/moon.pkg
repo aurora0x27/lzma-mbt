@@ -2,4 +2,6 @@ pkgtype(kind: "executable")
 
 import {
   "aurora0x27/lzma-mbt" @lzma,
+  "aurora0x27/lzma-mbt/internal/coder",
+  "aurora0x27/lzma-mbt/xz",
 }

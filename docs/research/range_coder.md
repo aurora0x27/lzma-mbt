@@ -51,6 +51,8 @@ Self-inverse bit strings in whitebox tests. No public bitstream format besides L
 
 Must interoperate with `liblzma` LZMA streams. Decoder-side vectors plus encode-side CI (`scripts/diff_encode.py`) cover this.
 
+The decoder input is appendable for incremental callers. Each bit/direct-bit operation rolls back its arithmetic registers (and the probability cell for a bit operation) if normalization reaches the current input boundary, so the same operation can be retried after appending bytes. LZMA symbol-level continuation still requires a higher-level checkpoint around sequences of operations.
+
 ## Open questions
 
 None for the bit coder itself.

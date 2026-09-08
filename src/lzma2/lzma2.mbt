@@ -165,6 +165,280 @@ fn add_produced(produced : UInt64, n : Int) -> UInt64 raise @coder.CoderError {
 }
 
 ///|
+/// Incremental raw-LZMA2 parser. The LZMA dictionary and probability state
+/// survive calls; a compressed payload is committed only after its declared
+/// byte window has arrived.
+pub struct StreamDecoder {
+  mut buf : Array[Byte]
+  mut pos : Int
+  dec : @coder.LzmaDec
+  mut need_dict_reset : Bool
+  mut need_props : Bool
+  mut ended : Bool
+  payload_prefix : Array[Byte]
+  mut payload_range : @rc.RangeDecoder?
+  mut payload_remaining : Int
+  mut payload_goal : UInt64
+  mut payload_output_done : Bool
+}
+
+///|
+pub fn StreamDecoder::reset(self : StreamDecoder) -> Unit {
+  self.buf.clear()
+  self.pos = 0
+  self.dec.reset_dict()
+  self.dec.set_props(3, 0, 2)
+  self.need_dict_reset = true
+  self.need_props = true
+  self.ended = false
+  self.payload_prefix.clear()
+  self.payload_range = None
+  self.payload_remaining = 0
+  self.payload_goal = 0UL
+  self.payload_output_done = false
+}
+
+///|
+pub fn StreamDecoder::new(
+  memlimit : UInt64,
+  dict_size? : UInt = 65536U,
+) -> StreamDecoder raise @coder.CoderError {
+  let dict_int = dict_as_int(dict_size, memlimit)
+  {
+    buf: [],
+    pos: 0,
+    dec: @coder.LzmaDec::new(3, 0, 2, dict_int),
+    need_dict_reset: true,
+    need_props: true,
+    ended: false,
+    payload_prefix: [],
+    payload_range: None,
+    payload_remaining: 0,
+    payload_goal: 0UL,
+    payload_output_done: false,
+  }
+}
+
+///|
+fn StreamDecoder::available(self : StreamDecoder) -> Int {
+  self.buf.length() - self.pos
+}
+
+///|
+fn StreamDecoder::compact(self : StreamDecoder) -> Unit {
+  if self.pos > 0 && (self.pos >= 4096 || self.pos * 2 >= self.buf.length()) {
+    let next = Array(capacity=self.buf.length() - self.pos)
+    for b in self.buf[self.pos:] {
+      next.push(b)
+    }
+    self.buf = next
+    self.pos = 0
+  }
+}
+
+///|
+fn StreamDecoder::append(self : StreamDecoder, input : BytesView) -> Unit {
+  for b in input {
+    self.buf.push(b)
+  }
+}
+
+///|
+/// Feed arbitrary input. The boolean is true only after the LZMA2 end marker
+/// has been consumed. Incomplete headers and payloads are reported as false.
+pub fn StreamDecoder::feed(
+  self : StreamDecoder,
+  input : BytesView,
+) -> (Bytes, Bool) raise @coder.CoderError {
+  if self.ended && input.length() > 0 {
+    raise @coder.Data
+  }
+  self.append(input)
+  let out = @bit.Writer::new()
+  while true {
+    let avail = self.available()
+    if avail < 1 {
+      break
+    }
+    if self.payload_remaining > 0 ||
+      self.payload_prefix.length() > 0 ||
+      self.payload_range is Some(_) ||
+      self.payload_output_done {
+      if self.payload_remaining > 0 {
+        let take = if avail < self.payload_remaining {
+          avail
+        } else {
+          self.payload_remaining
+        }
+        let chunk = Array(capacity=take)
+        for b in self.buf[self.pos:self.pos + take] {
+          chunk.push(b)
+        }
+        self.pos = self.pos + take
+        self.payload_remaining = self.payload_remaining - take
+        match self.payload_range {
+          None => {
+            for b in chunk[:] {
+              self.payload_prefix.push(b)
+            }
+            if self.payload_prefix.length() >= 5 {
+              let first = Bytes::from_array(self.payload_prefix[:5])
+              let range = @rc.RangeDecoder::new(first[:]) catch {
+                @rc.Eof => raise @coder.Eof
+                @rc.Data => raise @coder.Data
+              }
+              if self.payload_prefix.length() > 5 {
+                let rest = Bytes::from_array(self.payload_prefix[5:])
+                range.append(rest[:])
+              }
+              self.payload_range = Some(range)
+              self.payload_prefix.clear()
+            }
+          }
+          Some(range) => {
+            let bytes = Bytes::from_array(chunk[:])
+            range.append(bytes[:])
+          }
+        }
+      }
+      match self.payload_range {
+        None => ()
+        Some(range) =>
+          if self.payload_output_done == false {
+            let mut keep_going = true
+            while keep_going {
+              let (piece, done) = self.dec.decode_symbol(
+                range,
+                self.payload_goal,
+                transactional=range.remaining() < 16,
+              ) catch {
+                @coder.Eof => {
+                  keep_going = false
+                  (b"", false)
+                }
+                err => raise err
+              }
+              if done {
+                self.payload_output_done = true
+                keep_going = false
+              } else {
+                out.write_bytes(piece[:])
+              }
+            }
+          }
+      }
+      if self.payload_output_done && self.payload_remaining == 0 {
+        self.payload_prefix.clear()
+        self.payload_range = None
+        self.payload_goal = 0UL
+        self.payload_output_done = false
+        continue
+      }
+      if self.payload_remaining == 0 && self.payload_output_done == false {
+        raise @coder.Eof
+      }
+      break
+    }
+    let c = self.buf[self.pos].to_int()
+    if c == 0 {
+      self.pos = self.pos + 1
+      self.ended = true
+      if self.available() > 0 {
+        raise @coder.Data
+      }
+      break
+    }
+    if c < 0x80 {
+      if c != 1 && c != 2 {
+        raise @coder.Data
+      }
+      if self.need_dict_reset && c != 1 {
+        raise @coder.Data
+      }
+      if c == 1 {
+        self.dec.reset_dict()
+        self.need_props = true
+      }
+      if avail < 3 {
+        break
+      }
+      let size = (
+          (self.buf[self.pos + 1].to_int() << 8) |
+          self.buf[self.pos + 2].to_int()
+        ) +
+        1
+      if avail < 3 + size {
+        break
+      }
+      let data = Array(capacity=size)
+      for b in self.buf[self.pos + 3:self.pos + 3 + size] {
+        data.push(b)
+      }
+      let bytes = Bytes::from_array(data[:])
+      self.dec.put_uncompressed(bytes[:])
+      out.write_bytes(bytes[:])
+      self.pos = self.pos + 3 + size
+      self.need_dict_reset = false
+      self.compact()
+      continue
+    }
+    if self.need_dict_reset && c < 0xE0 {
+      raise @coder.Data
+    }
+    let header = if c >= 0xC0 { 6 } else { 5 }
+    if avail < header {
+      break
+    }
+    let uncomp = (
+        ((c & 0x1F) << 16) |
+        (self.buf[self.pos + 1].to_int() << 8) |
+        self.buf[self.pos + 2].to_int()
+      ) +
+      1
+    let comp = (
+        (self.buf[self.pos + 3].to_int() << 8) | self.buf[self.pos + 4].to_int()
+      ) +
+      1
+    if avail < header + comp {
+      break
+    }
+    if c >= 0xE0 {
+      self.dec.reset_dict()
+      self.need_props = true
+    } else if c >= 0xA0 {
+      self.dec.reset_state()
+    }
+    if c >= 0xC0 {
+      let props = unpack_lzma_props(self.buf[self.pos + 5])
+      let (lc, lp, pb) = props
+      self.dec.set_props(lc, lp, pb)
+      self.need_props = false
+    } else if self.need_props {
+      raise @coder.Data
+    }
+    self.pos = self.pos + header
+    self.payload_prefix.clear()
+    self.payload_range = None
+    self.payload_remaining = comp
+    self.payload_goal = self.dec.position() +
+      uncomp.reinterpret_as_uint().to_uint64()
+    self.payload_output_done = false
+    self.need_dict_reset = false
+  }
+  (out.to_bytes(), self.ended)
+}
+
+///|
+pub fn StreamDecoder::finish(
+  self : StreamDecoder,
+) -> Bytes raise @coder.CoderError {
+  if self.ended == false {
+    raise @coder.Eof
+  }
+  b""
+}
+
+///|
 pub fn decode_lzma2_consumed(
   input : BytesView,
   memlimit : UInt64,

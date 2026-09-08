@@ -41,7 +41,7 @@ test "lzma2_truncated" {
 ///|
 test "lzma2_trailing_bytes_are_rejected" {
   let enc = encode_lzma2(b"x"[:], 3, 0, 2, 4096U)
-  let arr = Array::new(capacity=enc.length() + 1)
+  let arr = Array(capacity=enc.length() + 1)
   for b in enc[:] {
     arr.push(b)
   }
@@ -186,7 +186,7 @@ test "lzma2_repetitive_stays_compressed" {
 
 ///|
 test "lzma2_incompressible_roundtrip" {
-  let arr = Array::new(capacity=65536)
+  let arr = Array(capacity=65536)
   for i in 0..<65536 {
     let n = i.reinterpret_as_uint()
     arr.push((((n * 13U) ^ (n >> 3)) & 0xFFU).reinterpret_as_int().to_byte())
@@ -205,7 +205,7 @@ test "lzma2_incompressible_roundtrip" {
 ///|
 test "lzma2_consumed_stops_at_end_marker" {
   let enc = encode_lzma2(b"x"[:], 3, 0, 2, 4096U)
-  let arr = Array::new(capacity=enc.length() + 2)
+  let arr = Array(capacity=enc.length() + 2)
   for b in enc[:] {
     arr.push(b)
   }
@@ -222,7 +222,7 @@ test "lzma2_consumed_stops_at_end_marker" {
 
 ///|
 fn concat_bytes(parts : Array[Bytes]) -> Bytes {
-  let a = Array::new()
+  let a = Array()
   for p in parts {
     for b in p[:] {
       a.push(b)

@@ -4,7 +4,7 @@
 /// range decoder.
 struct LzmaDec {
   mut probs : Probs
-  dict : @lz.Dict
+  mut dict : @lz.Dict
   mut state : Int
   mut r0 : UInt
   mut r1 : UInt
@@ -14,6 +14,38 @@ struct LzmaDec {
   mut lc : Int
   mut lp : Int
   mut pb : Int
+}
+
+///|
+fn LzmaDec::clone(self : LzmaDec) -> LzmaDec {
+  {
+    probs: copy_probs(self.probs),
+    dict: self.dict.clone(),
+    state: self.state,
+    r0: self.r0,
+    r1: self.r1,
+    r2: self.r2,
+    r3: self.r3,
+    pos: self.pos,
+    lc: self.lc,
+    lp: self.lp,
+    pb: self.pb,
+  }
+}
+
+///|
+fn LzmaDec::restore(self : LzmaDec, snapshot : LzmaDec) -> Unit {
+  self.probs = snapshot.probs
+  self.dict = snapshot.dict
+  self.state = snapshot.state
+  self.r0 = snapshot.r0
+  self.r1 = snapshot.r1
+  self.r2 = snapshot.r2
+  self.r3 = snapshot.r3
+  self.pos = snapshot.pos
+  self.lc = snapshot.lc
+  self.lp = snapshot.lp
+  self.pb = snapshot.pb
 }
 
 ///|
@@ -66,26 +98,30 @@ pub fn LzmaDec::put_uncompressed(self : LzmaDec, data : BytesView) -> Unit {
 }
 
 ///|
-pub fn LzmaDec::decode_payload(
+pub fn LzmaDec::position(self : LzmaDec) -> UInt64 {
+  self.pos.reinterpret_as_uint().to_uint64()
+}
+
+///|
+/// Decode one complete LZMA symbol. The checkpoint makes an input boundary
+/// during normalization non-destructive, so the caller can append bytes and
+/// retry the same symbol.
+pub fn LzmaDec::decode_symbol(
   self : LzmaDec,
-  src : BytesView,
-  unpacked : UInt64,
+  dec : @rc.RangeDecoder,
+  goal : UInt64,
   allow_end_marker? : Bool = false,
-) -> Bytes raise CoderError {
-  let dec = @rc.RangeDecoder::new(src) catch {
-    @rc.Eof => raise Eof
-    @rc.Data => raise Data
-  }
-  let start = self.pos.reinterpret_as_uint().to_uint64()
-  let known = unpacked != 0xFFFF_FFFF_FFFF_FFFFUL
-  let goal = if known { start + unpacked } else { 0xFFFF_FFFF_FFFF_FFFFUL }
-  let out = @bit.Writer::new()
-  while true {
-    let cur = self.pos.reinterpret_as_uint().to_uint64()
-    if known && cur >= goal {
-      break
+  transactional? : Bool = true,
+) -> (Bytes, Bool) raise CoderError {
+  let snapshot = if transactional { Some(self.clone()) } else { None }
+  let range_snapshot = dec.checkpoint()
+  try {
+    let known = goal != 0xFFFF_FFFF_FFFF_FFFFUL
+    if known && self.pos.reinterpret_as_uint().to_uint64() >= goal {
+      return (b"", true)
     }
     let ps = pos_state(self.pos, self.pb)
+    let out = @bit.Writer::new()
     if dec_bit(dec, self.probs.is_match, self.state * 16 + ps) == 0 {
       let prev = if self.pos == 0 {
         b'\x00'
@@ -107,37 +143,52 @@ pub fn LzmaDec::decode_payload(
       out.write_u8(b)
       self.state = state_lit(self.state)
       self.pos = self.pos + 1
-    } else {
-      let mut dist = 0U
-      let mut len = 0
-      if dec_bit(dec, self.probs.is_rep, self.state) == 1 {
-        if dec_bit(dec, self.probs.is_rep_g0, self.state) == 0 {
-          if dec_bit(dec, self.probs.is_rep0_long, self.state * 16 + ps) == 0 {
-            if self.pos == 0 {
-              raise Data
-            }
-            let b = self.dict.output_byte(uint_as_int(self.r0)) catch {
-              @lz.InvalidDistance => raise Data
-            }
-            out.write_u8(b)
-            self.state = state_short_rep(self.state)
-            self.pos = self.pos + 1
-            continue
+      return (out.to_bytes(), false)
+    }
+    let mut dist = 0U
+    let mut len = 0
+    let mut short_rep = false
+    if dec_bit(dec, self.probs.is_rep, self.state) == 1 {
+      let g0 = dec_bit(dec, self.probs.is_rep_g0, self.state)
+      if g0 == 0 {
+        if dec_bit(dec, self.probs.is_rep0_long, self.state * 16 + ps) == 0 {
+          if self.pos == 0 {
+            raise Data
           }
+          let b = self.dict.output_byte(uint_as_int(self.r0)) catch {
+            @lz.InvalidDistance => raise Data
+          }
+          out.write_u8(b)
+          self.state = state_short_rep(self.state)
+          self.pos = self.pos + 1
+          short_rep = true
         } else {
-          if dec_bit(dec, self.probs.is_rep_g1, self.state) == 0 {
-            dist = self.r1
-          } else if dec_bit(dec, self.probs.is_rep_g2, self.state) == 0 {
-            dist = self.r2
-            self.r2 = self.r1
-          } else {
-            dist = self.r3
-            self.r3 = self.r2
-            self.r2 = self.r1
-          }
-          self.r1 = self.r0
-          self.r0 = dist
+          dist = self.r0
         }
+        if short_rep == false {
+          len = decode_length(
+            dec,
+            self.probs.rep_len_choice,
+            self.probs.rep_len_low,
+            self.probs.rep_len_mid,
+            self.probs.rep_len_high,
+            ps,
+          )
+          self.state = state_rep(self.state)
+        }
+      } else {
+        if dec_bit(dec, self.probs.is_rep_g1, self.state) == 0 {
+          dist = self.r1
+        } else if dec_bit(dec, self.probs.is_rep_g2, self.state) == 0 {
+          dist = self.r2
+          self.r2 = self.r1
+        } else {
+          dist = self.r3
+          self.r3 = self.r2
+          self.r2 = self.r1
+        }
+        self.r1 = self.r0
+        self.r0 = dist
         len = decode_length(
           dec,
           self.probs.rep_len_choice,
@@ -147,28 +198,30 @@ pub fn LzmaDec::decode_payload(
           ps,
         )
         self.state = state_rep(self.state)
-      } else {
-        self.r3 = self.r2
-        self.r2 = self.r1
-        self.r1 = self.r0
-        len = decode_length(
-          dec,
-          self.probs.len_choice,
-          self.probs.len_low,
-          self.probs.len_mid,
-          self.probs.len_high,
-          ps,
-        )
-        dist = decode_distance(dec, self.probs, len)
-        if dist == 0xFFFFFFFFU {
-          if allow_end_marker {
-            break
-          }
-          raise Data
-        }
-        self.r0 = dist
-        self.state = state_match(self.state)
       }
+    } else {
+      self.r3 = self.r2
+      self.r2 = self.r1
+      self.r1 = self.r0
+      len = decode_length(
+        dec,
+        self.probs.len_choice,
+        self.probs.len_low,
+        self.probs.len_mid,
+        self.probs.len_high,
+        ps,
+      )
+      dist = decode_distance(dec, self.probs, len)
+      if dist == 0xFFFFFFFFU {
+        if allow_end_marker {
+          return (b"", true)
+        }
+        raise Data
+      }
+      self.r0 = dist
+      self.state = state_match(self.state)
+    }
+    if short_rep == false {
       if dist > 0x7FFFFFFFU {
         raise Data
       }
@@ -187,11 +240,71 @@ pub fn LzmaDec::decode_payload(
         self.pos = self.pos + 1
       }
     }
+    (out.to_bytes(), false)
+  } catch {
+    Eof => {
+      match snapshot {
+        None => ()
+        Some(saved) => self.restore(saved)
+      }
+      dec.restore(range_snapshot)
+      raise Eof
+    }
+    err => raise err
+  }
+}
+
+///|
+pub fn LzmaDec::decode_payload(
+  self : LzmaDec,
+  src : BytesView,
+  unpacked : UInt64,
+  allow_end_marker? : Bool = false,
+) -> Bytes raise CoderError {
+  let dec = @rc.RangeDecoder::new(src) catch {
+    @rc.Eof => raise Eof
+    @rc.Data => raise Data
+  }
+  let start = self.pos.reinterpret_as_uint().to_uint64()
+  let known = unpacked != 0xFFFF_FFFF_FFFF_FFFFUL
+  let goal = if known { start + unpacked } else { 0xFFFF_FFFF_FFFF_FFFFUL }
+  let out = @bit.Writer::new()
+  while true {
+    let (symbol, done) = self.decode_symbol(
+      dec,
+      goal,
+      allow_end_marker~,
+      transactional=false,
+    )
+    if done {
+      break
+    }
+    out.write_bytes(symbol[:])
   }
   if known && self.pos.reinterpret_as_uint().to_uint64() != goal {
     raise Data
   }
   out.to_bytes()
+}
+
+///|
+/// Decode a payload transactionally. If input ends during decoding, all
+/// dictionary, model, repetition, and position changes are rolled back so a
+/// caller can retry the same payload after appending input.
+pub fn LzmaDec::decode_payload_resumable(
+  self : LzmaDec,
+  src : BytesView,
+  unpacked : UInt64,
+  allow_end_marker? : Bool = false,
+) -> Bytes raise CoderError {
+  let snapshot = self.clone()
+  self.decode_payload(src, unpacked, allow_end_marker~) catch {
+    Eof => {
+      self.restore(snapshot)
+      raise Eof
+    }
+    err => raise err
+  }
 }
 
 ///|

@@ -39,6 +39,8 @@ XZ Utils `src/liblzma/lzma/lzma2_encoder.c`, `lzma2_decoder.c`. Behaviour extrac
 
 One `LzmaDec` / `LzmaEnc` session per stream: sliding dictionary, probability tables, four reps, LZMA state index, and `pos` since the last dictionary reset. Uncompressed chunks write through the dictionary. `pos` is used for `pos_state` and literal context.
 
+The streaming decoder preserves this session and the LZMA2 control/header parser across `feed` calls. Compressed payload bytes are appended to a persistent range decoder and decoded at LZMA symbol boundaries; arbitrary input can therefore be split at control bytes, headers, or payload bytes without reparsing earlier symbols. The LZMA payload entry point is transactional: an unexpected end restores the dictionary/model checkpoint before retry.
+
 ## Algorithm
 
 Encode: split input into ≤ 64 KiB pieces. Keep a session across pieces. The first compressed chunk is `0xE0`; later compressed chunks are `0x80` (state continues). After an uncompressed `0x01` fallback (payload would exceed 65536 bytes), the next compressed chunk is `0xC0`. Match length is capped at the current piece so a match cannot cross the chunk boundary. Finish with `0x00`.

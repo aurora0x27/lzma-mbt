@@ -12,7 +12,7 @@ pub fn delta_encode(
     raise InvalidDistance
   }
   let hist = Array::make(distance, b'\x00')
-  let out = Array::new(capacity=input.length())
+  let out = Array(capacity=input.length())
   let mut i = 0
   for b in input {
     let p = i % distance
@@ -34,7 +34,7 @@ pub fn delta_decode(
     raise InvalidDistance
   }
   let hist = Array::make(distance, b'\x00')
-  let out = Array::new(capacity=input.length())
+  let out = Array(capacity=input.length())
   let mut i = 0
   for b in input {
     let p = i % distance
@@ -52,7 +52,7 @@ pub fn delta_decode(
 /// Reversible x86 E8/E9 relative-offset conversion (XZ BCJ subset).
 /// Offsets are 32-bit wrapping, matching the C `uint32_t` instruction pointer.
 pub fn bcj_x86(input : BytesView, start_offset : UInt, encode : Bool) -> Bytes {
-  let data = Array::new(capacity=input.length())
+  let data = Array(capacity=input.length())
   for b in input {
     data.push(b)
   }

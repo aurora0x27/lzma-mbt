@@ -29,7 +29,7 @@ Encoder: at each position prefer a repeat of length ≥ 2, else a new match ≥ 
 ## Invariants
 
 - `decode(encode(x)) == x` for this implementation
-- Chunked `Decoder::write` + `finish` equals one-shot `decode` on the same bytes (`code(..., Run)` only buffers)
+- Chunked `Decoder::write` + `finish` equals one-shot `decode` on the same bytes. Raw LZMA2 `code(..., Run)` is resumable at LZMA symbol boundaries; `.xz` and LZMA_Alone container parsing remains buffered.
 - Invalid distances and truncated range input fail with `DataError` / `UnexpectedEof`
 
 ## Edge cases

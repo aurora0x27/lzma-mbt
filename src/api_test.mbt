@@ -56,11 +56,11 @@ test "stream_chunked_decode" {
   let src = b"chunked streaming"
   let enc = encode(src[:], options={
     ..EncodeOptions::default(),
-    format: Format::Lzma,
+    format: Format::Xz,
   })
   let dec = Decoder::new(options={
     ..DecodeOptions::default(),
-    format: Format::Lzma,
+    format: Format::Xz,
   })
   let mut i = 0
   while i < enc.length() {
@@ -139,6 +139,116 @@ test "stream_chunked_lzma2_decode" {
 }
 
 ///|
+fn deterministic_bytes(n : Int) -> Bytes {
+  let arr = Array(capacity=n)
+  let mut x = 1
+  for _ in 0..<n {
+    x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+    arr.push((x & 0xFF).to_byte())
+  }
+  Bytes::from_array(arr[:])
+}
+
+///|
+fn stream_encode_run_finish(
+  src : Bytes,
+  format : Format,
+) -> Bytes raise LzmaError {
+  let enc = Encoder::new(options={ ..EncodeOptions::default(), format, })
+  let out = OutputBuf::new(size=1)
+  let mut pos = 0
+  let mut seed = 17
+  while pos < src.length() {
+    seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+    let step = seed % 19 + 1
+    let end = if pos + step > src.length() { src.length() } else { pos + step }
+    enc.code(src[pos:end], out, Action::Run) |> ignore
+    pos = end
+  }
+  enc.finish()
+}
+
+///|
+fn stream_decode_write_finish(
+  enc : Bytes,
+  format : Format,
+) -> Bytes raise LzmaError {
+  let dec = Decoder::new(options={ ..DecodeOptions::default(), format, })
+  let mut pos = 0
+  let mut seed = 23
+  while pos < enc.length() {
+    seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+    let step = seed % 17 + 1
+    let end = if pos + step > enc.length() { enc.length() } else { pos + step }
+    dec.write(enc[pos:end])
+    pos = end
+  }
+  dec.finish()
+}
+
+///|
+fn stream_decode_run(enc : Bytes, format : Format) -> Bytes raise LzmaError {
+  let dec = Decoder::new(options={ ..DecodeOptions::default(), format, })
+  let arr = Array()
+  let mut pos = 0
+  let mut seed = 31
+  let mut ended = false
+  while pos < enc.length() && ended == false {
+    seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+    let step = seed % 13 + 1
+    let end = if pos + step > enc.length() { enc.length() } else { pos + step }
+    let out = OutputBuf::new(size=5)
+    let r = dec.code(enc[pos:end], out, Action::Run)
+    for b in out.written()[:] {
+      arr.push(b)
+    }
+    if r.status is NeedOutput {
+      while true {
+        let tail = OutputBuf::new(size=5)
+        let more = dec.code(b""[:], tail, Action::Run)
+        for b in tail.written()[:] {
+          arr.push(b)
+        }
+        if more.status is StreamEnd {
+          ended = true
+          break
+        }
+      }
+    } else if r.status is StreamEnd {
+      ended = true
+    } else {
+
+    }
+    pos = end
+  }
+  Bytes::from_array(arr[:])
+}
+
+///|
+test "stream_random_chunks_encode_decode_all_formats" {
+  for src in [b"random chunk text", deterministic_bytes(70000)] {
+    for format in [Format::Xz, Format::Lzma, Format::Lzma2] {
+      let encoded = stream_encode_run_finish(src, format)
+      let decoded = stream_decode_write_finish(encoded, format)
+      assert_eq(decoded, src)
+    }
+  }
+}
+
+///|
+test "decoder_run_random_chunks_xz_and_lzma2" {
+  for src in [b"decoder run random chunks", deterministic_bytes(70000)] {
+    for format in [Format::Xz, Format::Lzma2] {
+      let encoded = encode(src[:], options={
+        ..EncodeOptions::default(),
+        format,
+      })
+      assert_eq(stream_decode_run(encoded, format), src)
+    }
+  }
+}
+
+///|
 test "pack_unpack_props_roundtrip" {
   let b = pack_props(3, 0, 2)
   let (lc, lp, pb) = unpack_props(b)
@@ -175,6 +285,14 @@ test "root_reexports_crc32" {
 }
 
 ///|
+test "root_reexports_sha256" {
+  assert_eq(
+    sha256(b"abc"[:]),
+    b"\xBA\x78\x16\xBF\x8F\x01\xCF\xEA\x41\x41\x40\xDE\x5D\xAE\x22\x23\xB0\x03\x61\xA3\x96\x17\x7A\x9C\xB4\x10\xFF\x61\xF2\x00\x15\xAD",
+  )
+}
+
+///|
 test "encode_decode_lzma2_roundtrip" {
   let src = b"hello lzma2 root"
   let enc = encode(src[:], options={
@@ -207,25 +325,65 @@ test "encode_is_deterministic" {
 }
 
 ///|
-test "sha256_check_is_unsupported" {
-  let err = @test.expect_error(() => {
-    encode(b"x"[:], options={
-      ..EncodeOptions::default(),
-      check: Check::Sha256,
-    })
-    |> ignore
+test "sha256_check_roundtrip" {
+  let src = b"sha256 root"
+  let enc = encode(src[:], options={
+    ..EncodeOptions::default(),
+    check: Check::Sha256,
   })
-  assert_true(err is UnsupportedFeature(_))
+  let dec = decode(enc[:])
+  assert_eq(dec, src)
 }
 
 ///|
-test "concatenated_is_unsupported" {
-  let enc = encode(b"x"[:])
+fn concat_views(a : BytesView, b : BytesView) -> Bytes {
+  let arr = Array(capacity=a.length() + b.length())
+  for x in a {
+    arr.push(x)
+  }
+  for x in b {
+    arr.push(x)
+  }
+  Bytes::from_array(arr[:])
+}
+
+///|
+test "auto_decodes_concatenated_xz" {
+  let a = encode(b"left"[:])
+  let b = encode(b"right"[:])
+  let enc = concat_views(a[:], b[:])
+  let dec = decode(enc[:], options={
+    ..DecodeOptions::default(),
+    concatenated: true,
+  })
+  assert_eq(dec, b"leftright")
+}
+
+///|
+test "concatenated_false_rejects_second_xz_stream" {
+  let a = encode(b"left"[:])
+  let b = encode(b"right"[:])
+  let enc = concat_views(a[:], b[:])
+  let err = @test.expect_error(() => decode(enc[:]) |> ignore)
+  assert_true(err is DataError)
+}
+
+///|
+test "concatenated_does_not_change_raw_lzma2_tail_semantics" {
+  let enc = encode(b"raw"[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma2,
+  })
+  let bad = concat_views(enc[:], b"\x00"[:])
   let err = @test.expect_error(() => {
-    decode(enc[:], options={ ..DecodeOptions::default(), concatenated: true, })
+    decode(bad[:], options={
+      ..DecodeOptions::default(),
+      format: Format::Lzma2,
+      concatenated: true,
+    })
     |> ignore
   })
-  assert_true(err is UnsupportedFeature(_))
+  assert_true(err is DataError)
 }
 
 ///|
@@ -279,7 +437,7 @@ test "stream_code_one_byte_output" {
   let first = dec.code(enc[:], out, Action::Finish)
   assert_eq(first.produced, 1)
   assert_eq(first.status, NeedOutput)
-  let collected = Array::new()
+  let collected = Array()
   collected.push(slot[0])
   while true {
     out.start = 0
@@ -316,7 +474,7 @@ test "encoder_code_finish_roundtrip" {
 
 ///|
 test "mixed_bytes_lzma_roundtrip" {
-  let arr = Array::new(capacity=256)
+  let arr = Array(capacity=256)
   let mut x = 1
   for _ in 0..<256 {
     x = (x * 1103515245 + 12345) & 0x7FFFFFFF
@@ -478,7 +636,7 @@ test "decoder_new_rejects_zero_memlimit" {
 ///|
 test "corrupt_xz_header_crc" {
   let enc = encode(b"x"[:])
-  let arr = Array::new(capacity=enc.length())
+  let arr = Array(capacity=enc.length())
   for b in enc[:] {
     arr.push(b)
   }
@@ -547,7 +705,7 @@ test "truncated_xz_is_eof" {
 ///|
 test "xz_trailing_garbage_is_data_error" {
   let enc = encode(b"x"[:])
-  let arr = Array::new(capacity=enc.length() + 1)
+  let arr = Array(capacity=enc.length() + 1)
   for b in enc[:] {
     arr.push(b)
   }
@@ -603,25 +761,33 @@ test "encoder_reset_allows_reuse" {
 }
 
 ///|
-test "run_before_finish_returns_ok" {
+test "run_before_finish_needs_more_input" {
   let enc = Encoder::new(options={
     ..EncodeOptions::default(),
     format: Format::Lzma,
   })
   let out = OutputBuf::new(size=16)
   let r = enc.code(b"x"[:], out, Action::Run)
-  assert_eq(r.status, Ok)
+  assert_eq(r.status, NeedInput)
   assert_eq(r.consumed, 1)
   assert_eq(r.produced, 0)
 }
 
 ///|
-test "decoder_new_rejects_concatenated" {
-  let err = @test.expect_error(() => {
-    Decoder::new(options={ ..DecodeOptions::default(), concatenated: true, })
-    |> ignore
+test "decoder_new_accepts_concatenated" {
+  let a = encode(b"chunk"[:])
+  let b = encode(b"ed"[:])
+  let enc = concat_views(a[:], b[:])
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    concatenated: true,
   })
-  assert_true(err is UnsupportedFeature(_))
+  let mut i = 0
+  while i < enc.length() {
+    dec.write(enc[i:i + 1])
+    i = i + 1
+  }
+  assert_eq(dec.finish(), b"chunked")
 }
 
 ///|
@@ -629,7 +795,7 @@ test "ignore_check_accepts_bad_crc64" {
   let src = b"badcrc"
   let enc = encode(src[:])
   let want = crc64(src[:])
-  let arr = Array::new(capacity=enc.length())
+  let arr = Array(capacity=enc.length())
   for b in enc[:] {
     arr.push(b)
   }
@@ -710,24 +876,127 @@ test "decoder_code_one_byte_run_then_finish" {
   let src = b"code run chunks"
   let enc = encode(src[:], options={
     ..EncodeOptions::default(),
-    format: Format::Lzma,
+    format: Format::Xz,
   })
   let dec = Decoder::new(options={
     ..DecodeOptions::default(),
-    format: Format::Lzma,
+    format: Format::Xz,
   })
   let out = OutputBuf::new(size=64)
   let mut i = 0
+  let mut ended = false
   while i < enc.length() {
     let step = dec.code(enc[i:i + 1], out, Action::Run)
-    assert_eq(step.status, Ok)
     assert_eq(step.consumed, 1)
-    assert_eq(step.produced, 0)
+    if i + 1 == enc.length() {
+      assert_eq(step.status, StreamEnd)
+      ended = true
+    } else {
+      assert_eq(step.status, NeedInput)
+    }
     i = i + 1
   }
-  let last = dec.code(b""[:], out, Action::Finish)
-  assert_eq(last.status, StreamEnd)
+  assert_true(ended)
   assert_eq(out.written(), src)
+}
+
+///|
+test "decoder_xz_payload_emits_before_footer" {
+  let src = b"xz payload streams before its footer"
+  let enc = encode(src[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Xz,
+  })
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    format: Format::Xz,
+  })
+  let out = OutputBuf::new(size=128)
+  let mut emitted_before_end = false
+  let mut i = 0
+  while i < enc.length() {
+    let step = dec.code(enc[i:i + 1], out, Action::Run)
+    if step.produced > 0 && i + 1 < enc.length() {
+      emitted_before_end = true
+    }
+    i = i + 1
+  }
+  assert_true(emitted_before_end)
+  assert_eq(out.written(), src)
+}
+
+///|
+
+///|
+test "decoder_run_complete_stream_drains_one_byte_output" {
+  let src = b"run drains"
+  let enc = encode(src[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma2,
+  })
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    format: Format::Lzma2,
+  })
+  let head = OutputBuf::new(size=1)
+  let first = dec.code(enc[:], head, Action::Run)
+  assert_eq(first.status, NeedOutput)
+  assert_eq(first.consumed, enc.length())
+  assert_eq(first.produced, 1)
+  let tail = OutputBuf::new(size=64)
+  let second = dec.code(b""[:], tail, Action::Run)
+  assert_eq(second.status, StreamEnd)
+  let arr = Array()
+  for b in head.written()[:] {
+    arr.push(b)
+  }
+  for b in tail.written()[:] {
+    arr.push(b)
+  }
+  assert_eq(Bytes::from_array(arr[:]), src)
+}
+
+///|
+test "decoder_run_lzma2_one_byte_chunks" {
+  let src = b"raw lzma2 one byte chunks"
+  let enc = encode(src[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma2,
+  })
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    format: Format::Lzma2,
+  })
+  let arr = Array()
+  let mut i = 0
+  let mut ended = false
+  while i < enc.length() {
+    let out = OutputBuf::new(size=3)
+    let r = dec.code(enc[i:i + 1], out, Action::Run)
+    assert_eq(r.consumed, 1)
+    for b in out.written()[:] {
+      arr.push(b)
+    }
+    if r.status is StreamEnd {
+      ended = true
+    } else {
+      assert_true(r.status is NeedInput || r.status is NeedOutput)
+    }
+    i = i + 1
+  }
+  while ended == false {
+    let out = OutputBuf::new(size=3)
+    let r = dec.code(b""[:], out, Action::Run)
+    for b in out.written()[:] {
+      arr.push(b)
+    }
+    if r.status is StreamEnd {
+      ended = true
+    } else {
+      assert_eq(r.status, NeedOutput)
+    }
+  }
+  assert_eq(Bytes::from_array(arr[:]), src)
 }
 
 ///|
@@ -815,7 +1084,7 @@ test "ignore_check_accepts_bad_crc32" {
     check: Check::Crc32,
   })
   let want = crc32(src[:])
-  let arr = Array::new(capacity=enc.length())
+  let arr = Array(capacity=enc.length())
   for b in enc[:] {
     arr.push(b)
   }
@@ -1005,7 +1274,7 @@ test "finish_returns_remaining_after_need_output" {
   assert_eq(first.status, NeedOutput)
   let rest = encoder.finish()
   let head = out.written()
-  let arr = Array::new(capacity=head.length() + rest.length())
+  let arr = Array(capacity=head.length() + rest.length())
   for b in head[:] {
     arr.push(b)
   }
@@ -1053,7 +1322,7 @@ test "decoder_finish_returns_remaining" {
   assert_eq(first.status, NeedOutput)
   let rest = dec.finish()
   let head = out.written()
-  let arr = Array::new(capacity=head.length() + rest.length())
+  let arr = Array(capacity=head.length() + rest.length())
   for b in head[:] {
     arr.push(b)
   }
@@ -1210,7 +1479,7 @@ test "lzma_header_size_too_large_is_data" {
     ..EncodeOptions::default(),
     format: Format::Lzma,
   })
-  let arr = Array::new(capacity=enc.length())
+  let arr = Array(capacity=enc.length())
   for b in enc[:] {
     arr.push(b)
   }
@@ -1502,7 +1771,7 @@ test "run_drains_after_need_output" {
   let tail = OutputBuf::new(size=4096)
   let second = encoder.code(b""[:], tail, Action::Run)
   assert_eq(second.status, StreamEnd)
-  let arr = Array::new()
+  let arr = Array()
   for b in head.written()[:] {
     arr.push(b)
   }

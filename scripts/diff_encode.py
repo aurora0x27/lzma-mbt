@@ -29,6 +29,8 @@ REQUIRED_CASES = {
     "short_lzma2_p0",
     "short_xz_p6_crc32",
     "short_xz_p6_none",
+    "short_xz_p6_sha256",
+    "short_xz_delta_d1_p6_crc64",
     "run64_xz_p6_crc64",
     "run64_lzma_p6",
     "run64_lzma2_p6",

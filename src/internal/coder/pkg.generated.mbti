@@ -21,6 +21,7 @@ pub(all) suberror CoderError {
 // Types and methods
 type LzmaDec
 pub fn LzmaDec::decode_payload(Self, BytesView, UInt64, allow_end_marker? : Bool) -> Bytes raise CoderError
+pub fn LzmaDec::decode_payload_resumable(Self, BytesView, UInt64, allow_end_marker? : Bool) -> Bytes raise CoderError
 pub fn LzmaDec::new(Int, Int, Int, Int) -> Self
 pub fn LzmaDec::put_uncompressed(Self, BytesView) -> Unit
 pub fn LzmaDec::reset_dict(Self) -> Unit

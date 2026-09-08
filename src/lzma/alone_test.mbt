@@ -96,7 +96,7 @@ test "decode_liblzma_run_alone" {
 test "small_header_dict_is_rounded_up" {
   let src = b"hello lzma"
   let enc = encode_alone(src[:], 3, 0, 2, 4096U)
-  let arr = Array::new(capacity=enc.length())
+  let arr = Array(capacity=enc.length())
   for b in enc[:] {
     arr.push(b)
   }
@@ -113,7 +113,7 @@ test "small_header_dict_is_rounded_up" {
 test "rounded_dict_is_checked_against_memlimit" {
   let src = b"hello lzma"
   let enc = encode_alone(src[:], 3, 0, 2, 4096U)
-  let arr = Array::new(capacity=enc.length())
+  let arr = Array(capacity=enc.length())
   for b in enc[:] {
     arr.push(b)
   }
@@ -130,7 +130,7 @@ test "rounded_dict_is_checked_against_memlimit" {
 test "zero_header_dict_is_rounded_up" {
   let src = b"hello lzma"
   let enc = encode_alone(src[:], 3, 0, 2, 4096U)
-  let arr = Array::new(capacity=enc.length())
+  let arr = Array(capacity=enc.length())
   for b in enc[:] {
     arr.push(b)
   }

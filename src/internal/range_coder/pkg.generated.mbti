@@ -32,6 +32,7 @@ pub struct RangeDecoder {
   mut pos : Int
   data : BytesView
 }
+pub fn RangeDecoder::clone(Self) -> Self
 pub fn RangeDecoder::decode_bit(Self, Array[UInt], Int) -> Int raise RcError
 pub fn RangeDecoder::decode_direct_bits(Self, Int) -> UInt raise RcError
 pub fn RangeDecoder::new(BytesView) -> Self raise RcError

@@ -6,9 +6,15 @@ pub fn crc32(BytesView, init? : UInt) -> UInt
 
 pub fn crc64(BytesView, init? : UInt64) -> UInt64
 
+pub fn sha256(BytesView) -> Bytes
+
 // Errors
 
 // Types and methods
+type Sha256State
+pub fn Sha256State::finish(Self) -> Bytes
+pub fn Sha256State::new() -> Self
+pub fn Sha256State::update(Self, BytesView) -> Unit
 
 // Type aliases
 

@@ -22,7 +22,8 @@ pub(all) enum Check {
 
 ///|
 pub(all) enum Action {
-  /// Buffers input. Compress/decompress runs at `Finish`.
+  /// Adds input. The decoder may complete and emit once a full stream is
+  /// available; the encoder remains buffered until `Finish`.
   Run
   /// Unsupported; `code` raises `InvalidConfiguration`.
   SyncFlush
@@ -34,11 +35,11 @@ pub(all) enum Action {
 
 ///|
 pub(all) enum Status {
-  /// `Run` buffered input; no codec output yet.
+  /// The call made progress without completing the stream.
   Ok
   /// `Finish` completed and pending output is fully drained.
   StreamEnd
-  /// Reserved for a future incremental state machine. `Run` currently returns `Ok`.
+  /// More input is required before the stream can complete.
   NeedInput
   /// Output buffer is full; take `written()` and continue `code` or `finish()`.
   NeedOutput
@@ -189,9 +190,6 @@ pub fn EncodeOptions::validate(self : EncodeOptions) -> Unit raise LzmaError {
   }
   Preset::new(self.preset.level, extreme=self.preset.extreme) |> ignore
   self.resolved_props() |> ignore
-  if self.check is Check::Sha256 {
-    raise UnsupportedFeature("SHA-256 check")
-  }
   validate_extra_filters(self.filters)
 }
 
@@ -217,9 +215,6 @@ pub fn DecodeOptions::default() -> DecodeOptions {
 
 ///|
 pub fn DecodeOptions::validate(self : DecodeOptions) -> Unit raise LzmaError {
-  if self.concatenated {
-    raise UnsupportedFeature("concatenated xz streams")
-  }
   if effective_memlimit(self.memlimit) == 0UL {
     raise InvalidConfiguration("memlimit must be > 0")
   }

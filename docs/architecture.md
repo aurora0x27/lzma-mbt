@@ -192,8 +192,8 @@ lzma-mbt/
 | `aurora0x27/lzma-mbt` | 是 | 易用编解码、流式入口、错误/选项再导出 | `lzma`, `lzma2`, `xz`, `checksum`, `filters`, `internal/coder` |
 | `.../lzma` | 是 | LZMA_Alone 头与 payload | `internal/coder`, `internal/bit` |
 | `.../lzma2` | 是 | LZMA2 chunk、共享字典、四种压缩重置 | `internal/coder`, `internal/bit` |
-| `.../xz` | 是 | Stream/Block/Index/Footer | `lzma2`, `checksum`, `internal/coder`, `internal/bit` |
-| `.../checksum` | 是 | CRC32、CRC64 | 无（仅 core） |
+| `.../xz` | 是 | Stream/Block/Index/Footer、容器内 Delta | `lzma2`, `checksum`, `filters`, `internal/coder`, `internal/bit` |
+| `.../checksum` | 是 | CRC32、CRC64、SHA-256 | 无（仅 core） |
 | `.../filters` | 是 | Delta、简化 x86 BCJ（根包额外前后处理） | 无（仅 core） |
 | `.../internal/bit` | 否 | 位/字节读写、整数打包 | 无（或仅 core） |
 | `.../internal/range_coder` | 否 | 范围编解码、概率更新 | `internal/bit` |
@@ -206,12 +206,14 @@ lzma-mbt/
 ```text
 根包
   ├─► xz ──► lzma2 ─┐
+  │     ├──► filters │  （容器内 Delta）
+  │     └──► checksum│  （xz 校验字段）
   ├─► lzma ─────────┼► internal/coder ─► range_coder / lz ─► bit
-  ├─► filters       │
-  └─► checksum ◄────┘  （xz 校验字段）
+  ├─► filters       │  （根包容器外过滤器）
+  └─► checksum      │
 ```
 
-`.xz` Block 内的过滤器链仍只有 LZMA2。Delta / BCJ 由根包在容器外前后处理，`xz` 包不依赖 `filters`。`cmd/diff_encode` 依赖根包，只是差分工具叶子，不反向改库分层。
+`.xz` Block 内的过滤器链支持 LZMA2 和 Delta -> LZMA2。根包 `EncodeOptions.filters` / `DecodeOptions.filters` 仍表示容器外额外前后处理。BCJ 容器过滤器尚未实现，不能把当前简化 x86 变换标为完整 liblzma BCJ。`cmd/diff_encode` 依赖根包和低层 `xz` 包，只是差分工具叶子，不反向改库分层。
 
 任何时候出现 `bit → lzma` 或 `lzma → xz`，都视为架构错误，应停下来改任务而不是“顺便改一层”。
 
@@ -262,7 +264,7 @@ src/lzma/
 | M5 | `lzma2` | LZMA2 编解码 |
 | M6 | `xz` | `.xz` |
 | M7 | `filters` | 过滤器链 |
-| M8 | 根包 `stream.mbt` | `write`/`code`/`finish`（Finish 前整段缓冲） |
+| M8 | 根包 `stream.mbt` | `write`/`code`/`finish`，含 `NeedInput`/`NeedOutput` 契约；裸 LZMA2 已支持跨 chunk 状态，XZ/LZMA payload 仍为缓冲式 |
 | M9 | 可选 `compat` 包 | 仅当需要 C 名映射 |
 | M10 | 不新增包 | 性能 |
 
@@ -288,8 +290,7 @@ src/lzma/
 
 ### 建议的下一步
 
-M0–M8 骨架、正确性测试、编码侧差分、LZMA2 跨 chunk 状态与 `.xz` 多 Block 解码已在本仓库落地。后续独立任务：
+M0–M8 骨架、正确性测试、编码侧差分、LZMA2 跨 chunk 状态、`.xz` 多 Block 解码、concatenated `.xz` 解码与 SHA-256 Check 已在本仓库落地。后续独立任务：
 
-1. concatenated Streams、SHA-256
-2. 完整 x86 BCJ 及 ARM 等过滤器作为容器内 filter
-3. 真正增量的 range/LZMA 状态机（现在 `Finish` 前整段缓冲）
+1. 完整 x86 BCJ 及 ARM 等过滤器作为容器内 filter
+2. 真正可暂停的 range/LZMA 状态机（当前压缩 payload 仍需完整输入后解码）

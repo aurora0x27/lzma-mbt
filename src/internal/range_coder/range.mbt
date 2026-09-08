@@ -126,7 +126,16 @@ pub struct RangeDecoder {
   mut range : UInt
   mut code : UInt
   mut pos : Int
-  data : BytesView
+  data : Array[Byte]
+}
+
+///|
+/// Arithmetic state at an LZMA symbol boundary. Input bytes are shared and
+/// are not copied into the checkpoint.
+pub struct RangeCheckpoint {
+  range : UInt
+  code : UInt
+  pos : Int
 }
 
 ///|
@@ -143,7 +152,49 @@ pub fn RangeDecoder::new(data : BytesView) -> RangeDecoder raise RcError {
     code = (code << 8) | @bit.byte_to_uint(data[i])
     i = i + 1
   }
-  { range: 0xFFFFFFFFU, code, pos: 5, data, }
+  let bytes = Array(capacity=data.length())
+  for b in data {
+    bytes.push(b)
+  }
+  { range: 0xFFFFFFFFU, code, pos: 5, data: bytes, }
+}
+
+///|
+/// Copy arithmetic state while retaining the same immutable input view.
+pub fn RangeDecoder::clone(self : RangeDecoder) -> RangeDecoder {
+  let data = Array(capacity=self.data.length())
+  for b in self.data[:] {
+    data.push(b)
+  }
+  { range: self.range, code: self.code, pos: self.pos, data, }
+}
+
+///|
+/// Append bytes for a decoder that paused at an input boundary.
+pub fn RangeDecoder::append(self : RangeDecoder, data : BytesView) -> Unit {
+  for b in data {
+    self.data.push(b)
+  }
+}
+
+///|
+pub fn RangeDecoder::remaining(self : RangeDecoder) -> Int {
+  self.data.length() - self.pos
+}
+
+///|
+pub fn RangeDecoder::checkpoint(self : RangeDecoder) -> RangeCheckpoint {
+  { range: self.range, code: self.code, pos: self.pos, }
+}
+
+///|
+pub fn RangeDecoder::restore(
+  self : RangeDecoder,
+  checkpoint : RangeCheckpoint,
+) -> Unit {
+  self.range = checkpoint.range
+  self.code = checkpoint.code
+  self.pos = checkpoint.pos
 }
 
 ///|
@@ -170,18 +221,40 @@ pub fn RangeDecoder::decode_bit(
   probs : Array[UInt],
   index : Int,
 ) -> Int raise RcError {
-  let prob = probs[index]
+  let old_range = self.range
+  let old_code = self.code
+  let old_pos = self.pos
+  let old_prob = probs[index]
+  let prob = old_prob
   let bound = (self.range >> 11) * prob
   if self.code < bound {
     self.range = bound
     probs[index] = prob_update_0(prob)
-    self.normalize()
+    self.normalize() catch {
+      Eof => {
+        self.range = old_range
+        self.code = old_code
+        self.pos = old_pos
+        probs[index] = old_prob
+        raise Eof
+      }
+      Data => raise Data
+    }
     0
   } else {
     self.range = self.range - bound
     self.code = self.code - bound
     probs[index] = prob_update_1(prob)
-    self.normalize()
+    self.normalize() catch {
+      Eof => {
+        self.range = old_range
+        self.code = old_code
+        self.pos = old_pos
+        probs[index] = old_prob
+        raise Eof
+      }
+      Data => raise Data
+    }
     1
   }
 }
@@ -191,6 +264,9 @@ pub fn RangeDecoder::decode_direct_bits(
   self : RangeDecoder,
   num_bits : Int,
 ) -> UInt raise RcError {
+  let old_range = self.range
+  let old_code = self.code
+  let old_pos = self.pos
   let mut result = 0U
   let mut n = num_bits
   while n > 0 {
@@ -200,7 +276,15 @@ pub fn RangeDecoder::decode_direct_bits(
     self.code = self.code + (self.range & t)
     result = (result << 1) + (t + 1U)
     n = n - 1
-    self.normalize()
+    self.normalize() catch {
+      Eof => {
+        self.range = old_range
+        self.code = old_code
+        self.pos = old_pos
+        raise Eof
+      }
+      Data => raise Data
+    }
   }
   result
 }
