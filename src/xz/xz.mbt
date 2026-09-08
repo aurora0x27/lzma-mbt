@@ -118,6 +118,7 @@ pub struct BlockSizes {
 priv struct BlockFilters {
   dict_size : UInt
   delta_distance : Int
+  x86 : Bool
 }
 
 ///|
@@ -137,6 +138,7 @@ fn parse_block_filters(
     raise @coder.Unsupported
   }
   let mut delta_distance = 0
+  let mut x86 = false
   let mut dict_size = 0U
   let mut i = 0
   while i < nfilters {
@@ -148,7 +150,9 @@ fn parse_block_filters(
     let psz = psz64.reinterpret_as_int64().to_int()
     let props = hr.read_exact(psz) catch { @bit.Eof => raise @coder.Eof }
     if i == nfilters - 1 {
-      if fid == 0x03UL {
+      // The final filter must be the LZMA2 codec. A recognized pre-filter in
+      // the final position is an invalid chain; unknown IDs are unsupported.
+      if fid == 0x03UL || fid == 0x04UL {
         raise @coder.Data
       }
       if fid != 0x21UL {
@@ -159,17 +163,26 @@ fn parse_block_filters(
       }
       dict_size = @lzma2.lzma2_dict_size(props[0])
     } else {
-      if fid != 0x03UL {
+      // With at most two filters only one pre-filter can be listed; it is
+      // either Delta (0x03, one-byte property) or x86 BCJ (0x04, no options).
+      if fid != 0x03UL && fid != 0x04UL {
         raise @coder.Unsupported
       }
-      if psz != 1 {
-        raise @coder.Data
+      if fid == 0x03UL {
+        if psz != 1 {
+          raise @coder.Data
+        }
+        delta_distance = props[0].to_int() + 1
+      } else {
+        if psz != 0 {
+          raise @coder.Data
+        }
+        x86 = true
       }
-      delta_distance = props[0].to_int() + 1
     }
     i = i + 1
   }
-  { dict_size, delta_distance, }
+  { dict_size, delta_distance, x86, }
 }
 
 ///|
@@ -357,12 +370,14 @@ fn decode_one_block(
     memlimit,
     dict_size=filters.dict_size,
   )
-  let plain = if filters.delta_distance == 0 {
-    filtered
-  } else {
+  let plain = if filters.delta_distance != 0 {
     @filters.delta_decode(filtered[:], filters.delta_distance) catch {
       _ => raise @coder.Data
     }
+  } else if filters.x86 {
+    @filters.bcj_x86(filtered[:], 0U, false)
+  } else {
+    filtered
   }
   match declared_comp {
     Some(_) => if used != window.length() { raise @coder.Data }
@@ -723,25 +738,34 @@ pub fn StreamDecoder::feed(
       @coder.Eof => break
       err => raise err
     }
+    // x86 BCJ is a five-byte sliding-window filter, so Blocks using it are
+    // decoded whole (once their payload, padding, and Check are buffered)
+    // through the same one-shot path as Blocks without a declared compressed
+    // size. Delta Blocks keep the incremental per-chunk path.
+    let whole = match header.declared_comp {
+      None => true
+      Some(_) => header.filters.x86
+    }
+    if whole {
+      let (plain, unpadded, used) = decode_one_block(
+        @bit.Reader::new(suffix[:]),
+        self.memlimit,
+        self.ignore_check,
+        self.check_id,
+        check_field_size(self.check_id),
+      ) catch {
+        @coder.Eof => break
+        err => raise err
+      }
+      out.write_bytes(plain[:])
+      self.blocks.push({ unpadded, uncompressed: plain.length().to_uint64(), })
+      self.pos = self.pos + used
+      self.compact()
+      continue
+    }
     let comp = match header.declared_comp {
       Some(n) => n.reinterpret_as_int64().to_int()
-      None => {
-        let (plain, unpadded, used) = decode_one_block(
-          @bit.Reader::new(suffix[:]),
-          self.memlimit,
-          self.ignore_check,
-          self.check_id,
-          check_field_size(self.check_id),
-        ) catch {
-          @coder.Eof => break
-          err => raise err
-        }
-        out.write_bytes(plain[:])
-        self.blocks.push({ unpadded, uncompressed: plain.length().to_uint64(), })
-        self.pos = self.pos + used
-        self.compact()
-        continue
-      }
+      None => raise @coder.Data
     }
     if comp < 1 {
       raise @coder.Data
@@ -776,6 +800,10 @@ pub fn StreamDecoder::finish(
 }
 
 ///|
+/// Encode a single-Block `.xz` Stream. `delta_distance` and `bcj_x86` select
+/// the optional container pre-filter written into the Block Header; at most
+/// one pre-filter is supported (x86 BCJ has no filter options, so it is
+/// stored as filter ID `0x04` with a zero-length property).
 pub fn encode_xz(
   input : BytesView,
   lc : Int,
@@ -784,6 +812,7 @@ pub fn encode_xz(
   dict_size : UInt,
   check_id? : Int = 4,
   delta_distance? : Int = 0,
+  bcj_x86? : Bool = false,
 ) -> Bytes raise @coder.CoderError {
   // A single Block is enough for a well-formed stream; multi-Block splitting
   // is not required for decoder compatibility (see docs/research/xz.md).
@@ -791,24 +820,34 @@ pub fn encode_xz(
   if delta_distance < 0 || delta_distance > 256 {
     raise @coder.Data
   }
-  let filtered = if delta_distance == 0 {
-    bytes_from_view(input)
-  } else {
+  if bcj_x86 && delta_distance != 0 {
+    raise @coder.Data
+  }
+  let pre = if bcj_x86 {
+    @filters.bcj_x86(input, 0U, true)
+  } else if delta_distance != 0 {
     @filters.delta_encode(input, delta_distance) catch {
       _ => raise @coder.Data
     }
+  } else {
+    bytes_from_view(input)
   }
-  let payload = @lzma2.encode_lzma2(filtered[:], lc, lp, pb, dict_size)
+  let payload = @lzma2.encode_lzma2(pre[:], lc, lp, pb, dict_size)
   let flags = Bytes::from_array([b'\x00', check_id.to_byte()][:])
   let w = @bit.Writer::new()
   w.write_bytes(b"\xFD\x37\x7A\x58\x5A\x00"[:])
   w.write_bytes(flags[:])
   w.write_u32_le(@checksum.crc32(flags[:]))
   let content = @bit.Writer::new()
-  content.write_u8(if delta_distance == 0 { b'\xC0' } else { b'\xC1' })
+  let has_pre = bcj_x86 || delta_distance != 0
+  content.write_u8(if has_pre { b'\xC1' } else { b'\xC0' })
   write_vli(content, payload.length().reinterpret_as_uint().to_uint64())
   write_vli(content, input.length().reinterpret_as_uint().to_uint64())
-  if delta_distance != 0 {
+  if bcj_x86 {
+    // x86 BCJ: filter ID 0x04, empty filter properties (size 0).
+    content.write_u8(b'\x04')
+    content.write_u8(b'\x00')
+  } else if delta_distance != 0 {
     content.write_u8(b'\x03')
     content.write_u8(b'\x01')
     content.write_u8((delta_distance - 1).to_byte())

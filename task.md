@@ -1,6 +1,6 @@
 # 待完成大任务
 
-M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2（含跨 chunk 字典与 `0x80`/`0xA0`/`0xC0`/`0xE0`）/ 单 Stream `.xz`（解码 0..N Block，编码仍为 1 Block）、CRC32/CRC64/SHA-256、容器外 Delta 与简化 x86 BCJ、XZ 容器内 Delta、Finish 前整段缓冲的流式外壳。编码侧差分（本库 encode → `xz -d` / liblzma）已在 CI 落地。完成状态以 [docs/compatibility.md](./docs/compatibility.md) 为准。
+M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2（含跨 chunk 字典与 `0x80`/`0xA0`/`0xC0`/`0xE0`）/ 单 Stream `.xz`（解码 0..N Block，编码仍为 1 Block）、CRC32/CRC64/SHA-256、容器外 Delta 与完整 x86 BCJ、XZ 容器内 Delta 与 x86 BCJ（ID `0x04`）、Finish 前整段缓冲的流式外壳。编码侧差分（本库 encode → `xz -d` / liblzma）已在 CI 落地。完成状态以 [docs/compatibility.md](./docs/compatibility.md) 为准。
 
 本文件只列**尚未完成的大任务**。实现顺序按正确性 → 兼容性 → 流式语义 → 性能。不要并行铺开，不要把未实现标成 complete。协议见 [AGENTS.md](./AGENTS.md)。
 
@@ -41,34 +41,25 @@ python3 scripts/diff_encode.py
 
 | 项 | 最低回归 |
 | --- | --- |
-| T1 编码差分 | `scripts/diff_encode.py` 现有 28 案（空 / 短 / run / 不可压缩 / 跨 64 KiB / preset 0 与 6 / CRC32·CRC64·None·SHA-256 / XZ Delta+LZMA2） |
+| T1 编码差分 | `scripts/diff_encode.py` 现有 29 案（空 / 短 / run / 不可压缩 / 跨 64 KiB / preset 0 与 6 / CRC32·CRC64·None·SHA-256 / XZ Delta+LZMA2 / XZ x86-BCJ+LZMA2） |
 | T2 LZMA2 跨 chunk | `0xE0` 后 `0x80`、白盒 `0xA0`/`0xC0`、`0x01`+`0x02`、70 000 字节第二块为 `0x80`、liblzma 2 MiB+100 `'A'` 向量；打头 `0x80`/`0xA0`/`0xC0`/`0x02` 仍是 `Data` |
 | `.xz` 多 Block 解码 | `xz --block-size=2` 的 `"aabb"`（2 Block）与 `"aabbcc"`（3 Block）；空 Stream / 单 Block / Footer 后垃圾回归；Index 记录数或逐条 size 不符 → `DataError`；第二 Block Header/Data/Check 截断 → `Eof`；编码器 Index 仍为 1 条 |
 | XZ 容器内 Delta | 自编码 distance 1 / 4 / 256；`xz --delta=dist=1/4/256 --lzma2=preset=0` 参考 `.xz`；编码差分含 Delta+LZMA2 并由 Python `lzma` / `xz -d` 解码；非法属性长度、Delta 作为最后一条、三过滤器链均有负例 |
+| XZ 容器内 x86 BCJ | `bcj_x86` 与 `lzma_bcj_x86_*` 字节一致（overlap / prev_mask 向量）；`xz --x86` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x04` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 x86-BCJ+LZMA2；x86 属性非空 / x86 作为最后一条 → `Data`，未知 prefilter / 三过滤器链 → `Unsupported` |
 
-## T6 — 容器内过滤器链
+## T6 — 容器内过滤器链（其余 ISA）
 
-**问题**：BCJ 只在根包对明文做容器外前后处理。`.xz` Block Header 里的 BCJ filter ID 仍解码为 `UnsupportedFeature`。当前 x86 BCJ 是 E8/E9 可逆子集，不是完整 `liblzma` BCJ。Delta -> LZMA2 容器链已完成，后续不要重复实现。
+**问题**：容器内 x86 BCJ（完整 `simple/x86.c` 变换，Block Header ID `0x04`）与 Delta -> LZMA2 已落地；BCJ 已统一为完整算法（见回归表「XZ 容器内 x86 BCJ」），后续不要重复实现 x86 或 Delta。
 
-**范围**（按过滤器拆 PR，不要一次做完所有 ISA）：
+**范围**（每个 ISA 单独一个子任务，不要一次做完所有 ISA）：
 
-1. 完整 x86 BCJ（MSByte / prev_mask，对齐 `simple/x86.c`），并允许出现在 Block Header（ID `0x04`）。
-2. ARM / ARM64 / ARM-Thumb / PowerPC / IA64 / SPARC：各为一个后续子任务，先有研究笔记和参考向量再写码。
+- ARM / ARM64 / ARM-Thumb / PowerPC / IA64 / SPARC：各为一个后续子任务，先有研究笔记和参考向量再写码。每个子任务单独套用「通用完成门」。未做的 ISA 必须仍是 `UnsupportedFeature`，并保留负例。
 
-每个子任务单独套用「通用完成门」。未做的 ISA 必须仍是 `UnsupportedFeature`，并保留负例。
-
-**测试（x86 BCJ，ID `0x04`）**
-
-- 含重叠 `E8`/`E9`、MSByte 状态与 `prev_mask` 的向量，与 `lzma_simple_x86_*` / 参考 `.xz` 一致（不能只用当前可逆子集冒充 complete）。
-- 参考 `xz`/`liblzma` 生成的 BCJ+LZMA2 `.xz` 能解。
-- 若编码写入 Block Header：`xz -d` 能解；Filter Flags 的 filter 数、ID、properties 与 liblzma 头格式一致。
-- `start_offset`：0 与非 0 各至少一案。
-- 根包 `EncodeOptions.filters` 的容器外 BCJ 现有 round-trip 不得无故改变；若统一实现，须在任务说明和 `docs/api.md` 写明。
-
-**测试（其余 ISA，每个子任务）**
+**测试（每个子任务）**
 
 - 先有 `docs/research/filters.md`（或独立笔记）+ 至少一份参考 `.xz` / 变换向量，再写码。
 - 解码参考文件明文一致；未实现的 ID 仍 `UnsupportedFeature`。
+- 该 ISA 有编码路径时：写入 Block Header 的 Filter Flags（filter 数、ID、properties）与 liblzma 头格式一致，`xz -d` / Python `lzma` 能解；编码差分至少加一例。
 
 **负例（所有子任务共用）**
 
@@ -80,7 +71,7 @@ python3 scripts/diff_encode.py
 
 - [ ] 本子任务对应的兼容性矩阵格子有测试才标 yes；未做 ISA 保持 no。
 - [ ] 容器内链与根包 `filters` 的关系在 `docs/api.md` / `docs/research/xz.md` / `filters.md` 写清。
-- [ ] 不得把简化 E8/E9 子集标成「完整 x86 BCJ」。
+- [ ] 不得把未做 ISA 冒充 complete（x86 已完成，见上）。
 
 ---
 
@@ -184,9 +175,9 @@ Flush：
 ## 建议执行顺序
 
 ```text
-T6 容器内过滤器（x86 BCJ 优先；Delta 已完成）
- → T7 增量流式状态机
+T6 容器内过滤器（其余 ISA：ARM / ARM64 / ARM-Thumb / PowerPC / IA64 / SPARC）
+ → T7 增量流式状态机（.lzma 增量余量）
  → T8 最优解析
 ```
 
-T8 期间编码差分必须保持绿色。T6 按过滤器拆 PR，每份 PR 单独满足「通用完成门」。
+T8 期间编码差分必须保持绿色。T6 每个 ISA 单独拆一个子任务并套用「通用完成门」。

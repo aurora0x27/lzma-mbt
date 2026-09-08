@@ -1034,3 +1034,197 @@ test "xz_three_filter_chains_are_unsupported" {
   })
   assert_true(err is @coder.Unsupported)
 }
+
+///|
+fn push_u32_le(a : Array[Byte], v : UInt) -> Unit {
+  a.push((v & 0xFFU).reinterpret_as_int().to_byte())
+  a.push(((v >> 8) & 0xFFU).reinterpret_as_int().to_byte())
+  a.push(((v >> 16) & 0xFFU).reinterpret_as_int().to_byte())
+  a.push(((v >> 24) & 0xFFU).reinterpret_as_int().to_byte())
+}
+
+///|
+/// Deterministic x86-laden payload exercising adjacent/overlapping E8/E9 with
+/// 0x00/0xFF immediate top bytes (the MSByte / `prev_mask` state machine).
+fn x86_bcj_plain() -> Bytes {
+  let a = Array()
+  let vals = [
+    0U, 1U, 0xFFFFFFFFU, 5U, 0xFFFFFFFBU, 0x7FFFFFFFU, 0x80000000U, 100U, 0xFFFFFF9CU,
+    0x10U, 0xFFFFFFF0U, 0x4000U,
+  ]
+  for i in 0..<60 {
+    let op = if i % 2 == 0 { b'\xE8' } else { b'\xE9' }
+    a.push(op)
+    push_u32_le(a, vals[i % 12])
+    for _ in 0..<(i % 3) {
+      a.push(b'\x90')
+    }
+  }
+  let seg = b"\xE8\xE8\x00\x00\x00\xE8\xE9\x00\x00\x00\xE9\xE8\xFF\xFF\xFF\x90\x90"
+  for _ in 0..<40 {
+    for b in seg[:] {
+      a.push(b)
+    }
+  }
+  for _ in 0..<3 {
+    for n in 0..<256 {
+      a.push(n.to_byte())
+    }
+  }
+  Bytes::from_array(a[:])
+}
+
+///|
+/// `xz --x86 --lzma2=preset=6 --check=crc64` of `x86_bcj_plain()`.
+fn liblzma_x86_xz() -> Bytes {
+  b"\xFD\x37\x7A\x58\x5A\x00\x00\x04\xE6\xD6\xB4\x46\x04\xC1\xBA\x04\x90\x0E\x04\x00\x21\x01\x16\x00\x00\x00\x00\x00\x3D\xCD\x40\x4E\xE0\x07\x0F\x02\x32\x5D\x00\x74\x01\x3C\x19\x3E\x07\xF0\xDD\xC3\x74\x0E\xEB\x71\x1F\xFC\x93\x7B\x44\x00\xBC\x62\x07\x0D\x5A\x11\x7B\x3F\xB4\xCC\x47\xA5\x06\x4B\x73\x52\x82\xC0\x73\xEE\x56\xAC\xA2\x25\x0C\x5E\xD8\xD2\xA6\xEB\xB1\x86\x3A\xB6\x3E\x77\x80\xB4\x2A\xD5\x2C\xB8\x7B\x07\x10\x2F\xA2\x92\x0F\xEE\x8D\x8E\xB7\x91\xDB\xC0\xDF\xC4\xB4\x7B\xEE\xEB\xFC\x97\x6C\xF7\xE7\xFD\x2E\xA7\xDB\x9F\x1B\xCC\x9A\x01\x23\x84\xC4\x03\x8D\x3F\xE3\xDF\x49\xAA\xDA\x07\x09\xB3\x29\x69\x5E\x64\xCB\xC5\x8A\x18\x8D\x42\xA2\x3E\xB2\x6C\xD8\x2D\xCD\x48\x43\xAB\x49\x03\x62\x8F\x88\xD3\x0A\x5A\x12\x2F\xC2\xDA\x62\x35\x0F\xAF\xBF\xD5\x37\xD3\xAB\x5E\x85\xBA\xB2\x00\xF6\xF7\x73\x60\xD0\x43\x90\x4A\x23\x61\x71\x93\x80\x13\x30\xF7\x31\x72\x81\x21\xBF\x46\x43\x97\x62\xD1\x38\xE7\xF9\x8F\xB1\x1E\x69\xE1\xFE\x60\x02\xAD\x4B\xD8\xF7\xBC\x09\xE3\x7B\x01\x47\xED\x3B\x55\xBA\x00\x2C\x9E\xDC\xBD\xA7\xCB\x83\x64\x54\xBD\x32\x63\x49\x3C\x80\xDF\xE6\x83\xB8\x0F\x04\x09\xDB\x9E\x2F\xBD\x4B\x1B\x89\x43\xF7\xAB\x7F\x88\x19\x08\x97\xA9\x44\x8D\x42\x11\xD1\x06\xFC\xAC\x20\xF8\x16\x35\x3E\x98\x33\x01\xB2\xBC\x53\xB3\x97\x7B\x4C\xE2\xC4\x26\x4D\x8C\xFC\xC5\x4E\xA9\x2F\x0D\xF5\xCC\x91\x88\x10\x2A\x37\x5E\xC0\xEF\x4C\x5B\x49\x1B\xE5\xBB\x74\x03\x47\x7C\xD3\xA7\x65\x80\xE2\xD2\xC9\x3A\xB1\x8A\x08\xF7\xAA\xF5\x28\xBF\xB2\xE0\x5A\xA3\x94\xD0\x91\x9E\xD9\xA0\x04\xAA\x7C\xBE\xF3\xC4\x35\x46\x58\xA3\x71\xB7\xA9\x04\x04\x96\x40\x6F\xD6\xFD\x31\x55\x5B\x06\x75\x33\xA6\x7F\xDE\xF9\x6D\xE6\x14\xFD\xDC\xB7\x06\x94\x27\x12\xE9\xAA\x8B\x89\x77\x74\xEA\x11\x2D\xAE\x46\xFF\x26\xB7\x46\x26\xA8\xAE\x37\x1A\x46\x19\x93\x67\xAE\xA4\xC5\x41\x9D\x2D\x73\xB4\x38\x8C\x13\xF0\x8F\x67\xA3\x22\x6A\xC0\xCA\x0C\x3F\xA3\x84\x79\x2F\x8A\xC2\xE8\x45\x00\xC8\x2F\x9A\x29\xBC\x5D\xAC\x97\x5F\xA3\xD7\x92\x1A\x5D\x59\xDA\xC2\xD7\x10\x44\xB6\x65\x12\xC8\xB7\xB5\x4E\x8F\x38\x6D\xA4\x96\x2C\x12\x5A\x7C\x1A\x18\xE5\x81\x54\x68\xEE\xB4\x48\xA2\xBF\xA4\x2A\x17\xA8\x91\x6A\xFA\xEF\x4E\x01\xA9\xD6\x53\xBA\xE5\xAC\xD5\x30\x3B\x92\xED\x61\x67\x6C\x52\x41\x05\x92\xA0\x47\x0B\xC9\x74\x6C\x4F\xC9\x63\x85\xCC\x9D\xD3\xCC\x85\x65\xE8\x63\xDC\x99\xEF\xF2\x9B\x6A\xF7\x8D\x8A\x8B\x91\xD0\x3E\xF7\x87\x89\xD4\x97\x24\xC0\xFB\x6F\x74\x77\x27\xD7\x2D\xA1\x6C\xA4\xB1\x3F\x06\xBF\x0B\x25\x4E\xEE\x4B\x21\x01\xE0\x5F\x84\xAC\x21\x02\xBF\x90\x00\x00\x00\x00\xBA\xFC\x5C\x30\xBE\x13\x9A\xE0\x00\x01\xD6\x04\x90\x0E\x00\x00\x81\x41\x6C\x45\xB1\xC4\x67\xFB\x02\x00\x00\x00\x00\x04\x59\x5A"
+}
+
+///|
+test "decode_liblzma_x86_bcj_xz" {
+  let src = x86_bcj_plain()
+  assert_eq(src.length(), 1808)
+  let enc = liblzma_x86_xz()
+  assert_eq(decode_xz(enc[:], 128UL * 1024UL * 1024UL, false), src)
+}
+
+///|
+test "xz_x86_bcj_self_roundtrip" {
+  let src = x86_bcj_plain()
+  let enc = encode_xz(src[:], 3, 0, 2, 65536U, check_id=4, bcj_x86=true)
+  assert_eq(decode_xz(enc[:], 128UL * 1024UL * 1024UL, false), src)
+  let arr = copy_bytes(enc)
+  assert_eq(arr[13], b'\xC1')
+  let x86 = find_x86_record(arr)
+  assert_true(x86 >= 0)
+  assert_eq(arr[x86 + 1], b'\x00')
+  assert_eq(arr[find_filter_id(arr, b'\x21') + 1], b'\x01')
+}
+
+///|
+test "xz_stream_decoder_x86_bcj_block" {
+  let src = x86_bcj_plain()
+  let enc = encode_xz(src[:], 3, 0, 2, 65536U, check_id=4, bcj_x86=true)
+  let dec = StreamDecoder::new(128UL * 1024UL * 1024UL, false)
+  let got : Array[Byte] = []
+  let mut i = 0
+  while i < enc.length() {
+    let (part, _) = dec.feed(enc[i:i + 1])
+    for b in part[:] {
+      got.push(b)
+    }
+    i = i + 1
+  }
+  assert_eq(Bytes::from_array(got[:]), src)
+}
+
+///|
+test "xz_stream_decoder_x86_reference_chunked" {
+  let src = x86_bcj_plain()
+  let enc = liblzma_x86_xz()
+  let dec = StreamDecoder::new(128UL * 1024UL * 1024UL, false)
+  let got : Array[Byte] = []
+  let mut i = 0
+  while i < enc.length() {
+    let (part, _) = dec.feed(enc[i:i + 1])
+    for b in part[:] {
+      got.push(b)
+    }
+    i = i + 1
+  }
+  assert_eq(Bytes::from_array(got[:]), src)
+}
+
+///|
+fn find_filter_id(arr : Array[Byte], id : Byte) -> Int {
+  let hs = arr[12].to_int()
+  let header_len = (hs + 1) * 4
+  let hdr_end = 12 + header_len - 4
+  let mut pos = -1
+  let mut i = 14
+  while i + 1 < hdr_end && pos < 0 {
+    if arr[i] == id {
+      pos = i
+    }
+    i = i + 1
+  }
+  pos
+}
+
+///|
+/// x86 BCJ filter record in the Block Header is ID 0x04 with a zero-size
+/// property, so locate the `04 00` pair rather than a bare 0x04 (the block's
+/// VLI size fields can also contain the byte 0x04).
+fn find_x86_record(arr : Array[Byte]) -> Int {
+  let hs = arr[12].to_int()
+  let header_len = (hs + 1) * 4
+  let hdr_end = 12 + header_len - 4
+  let mut pos = -1
+  let mut i = 14
+  while i + 1 < hdr_end && pos < 0 {
+    if arr[i] == b'\x04' && arr[i + 1] == b'\x00' {
+      pos = i
+    }
+    i = i + 1
+  }
+  pos
+}
+
+///|
+test "xz_x86_property_size_must_be_zero" {
+  let enc = encode_xz(
+    x86_bcj_plain()[:],
+    3,
+    0,
+    2,
+    4096U,
+    check_id=1,
+    bcj_x86=true,
+  )
+  let arr = copy_bytes(enc)
+  let x86 = find_x86_record(arr)
+  assert_true(x86 >= 0)
+  assert_eq(arr[x86 + 1], b'\x00')
+  arr[x86 + 1] = b'\x01'
+  rewrite_block_header_crc(arr)
+  let err = @test.expect_error(() => {
+    decode_xz(Bytes::from_array(arr[:])[:], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Data)
+}
+
+///|
+test "xz_x86_must_not_be_last_filter" {
+  let enc = encode_xz(b"tail"[:], 3, 0, 2, 4096U, check_id=1)
+  let arr = copy_bytes(enc)
+  let lzma2 = find_filter_id(arr, b'\x21')
+  assert_true(lzma2 >= 0)
+  arr[lzma2] = b'\x04'
+  rewrite_block_header_crc(arr)
+  let err = @test.expect_error(() => {
+    decode_xz(Bytes::from_array(arr[:])[:], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Data)
+}
+
+///|
+test "xz_unknown_prefilter_is_unsupported" {
+  let enc = encode_xz(
+    b"abcdefabcdef"[:],
+    3,
+    0,
+    2,
+    4096U,
+    check_id=1,
+    delta_distance=4,
+  )
+  let arr = copy_bytes(enc)
+  let delta = find_filter_id(arr, b'\x03')
+  assert_true(delta >= 0)
+  arr[delta] = b'\x05'
+  rewrite_block_header_crc(arr)
+  let err = @test.expect_error(() => {
+    decode_xz(Bytes::from_array(arr[:])[:], 1024UL * 1024UL, false) |> ignore
+  })
+  assert_true(err is @coder.Unsupported)
+}

@@ -3,16 +3,47 @@ package "aurora0x27/lzma-mbt/xz"
 
 import {
   "aurora0x27/lzma-mbt/internal/coder",
+  "aurora0x27/lzma-mbt/lzma2",
 }
 
 // Values
 pub fn decode_xz(BytesView, UInt64, Bool, concatenated? : Bool) -> Bytes raise @coder.CoderError
 
-pub fn encode_xz(BytesView, Int, Int, Int, UInt, check_id? : Int, delta_distance? : Int) -> Bytes raise @coder.CoderError
+pub fn encode_xz(BytesView, Int, Int, Int, UInt, check_id? : Int, delta_distance? : Int, bcj_x86? : Bool) -> Bytes raise @coder.CoderError
 
 // Errors
 
 // Types and methods
+pub struct BlockSizes {
+  unpadded : UInt64
+  uncompressed : UInt64
+}
+
+pub struct StreamDecoder {
+  mut buf : Array[Byte]
+  mut pos : Int
+  mut started : Bool
+  mut done : Bool
+  mut flags : Bytes?
+  mut check_id : Int
+  memlimit : UInt64
+  ignore_check : Bool
+  blocks : Array[BlockSizes]
+  mut active_block : Bool
+  mut active_lzma2 : @lzma2.StreamDecoder?
+  mut active_payload_remaining : Int
+  mut active_comp_total : Int
+  mut active_hbytes_len : Int
+  mut active_declared_uncomp : UInt64?
+  mut active_delta_distance : Int
+  active_plain : Array[Byte]
+  mut active_delta_history : Array[Byte]
+  mut active_delta_pos : Int
+}
+pub fn StreamDecoder::feed(Self, BytesView) -> (Bytes, Bool) raise @coder.CoderError
+pub fn StreamDecoder::finish(Self) -> Bytes raise @coder.CoderError
+pub fn StreamDecoder::new(UInt64, Bool) -> Self
+pub fn StreamDecoder::reset(Self) -> Unit
 
 // Type aliases
 

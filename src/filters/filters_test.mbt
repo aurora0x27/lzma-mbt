@@ -62,3 +62,39 @@ test "delta_empty_roundtrip" {
 test "bcj_empty_is_empty" {
   assert_eq(bcj_x86(b""[:], 0U, true), b"")
 }
+
+///|
+/// Exact outputs of liblzma `lzma_bcj_x86_encode/decode` (xz 5.8), locking the
+/// full MSByte / `prev_mask` transform rather than a reversible E8/E9 subset.
+test "bcj_x86_matches_liblzma_encode" {
+  let v1 = b"\xE8\x00\x00\x00\xFF\x90"
+  assert_eq(bcj_x86(v1[:], 0U, true), b"\xE8\x05\x00\x00\xFF\x90")
+  let top = b"\xE8\x01\x02\x03\xFF\xE9\x04\x05\x06\x00"
+  assert_eq(
+    bcj_x86(top[:], 0U, true),
+    b"\xE8\x06\x02\x03\xFF\xE9\x0E\x05\x06\x00",
+  )
+  // Adjacent/overlapping E8/E9 candidates exercise the prev_mask state.
+  let seg = b"\xE8\xE8\x00\x00\x00\xE8\xE9\x00\x00\x00\xE9\xE8\xFF\xFF\xFF\x90\x90"
+  assert_eq(
+    bcj_x86(seg[:], 0U, true),
+    b"\xE8\xED\x00\x00\x00\xE8\xF3\x00\x00\x00\xE9\xF7\xFF\xFF\xFF\x90\x90",
+  )
+  assert_eq(
+    bcj_x86(seg[:], 4096U, true),
+    b"\xE8\xED\x10\x00\x00\xE8\xF3\x10\x00\x00\xE9\xF7\x0F\x00\x00\x90\x90",
+  )
+}
+
+///|
+test "bcj_x86_matches_liblzma_decode" {
+  let encoded = b"\xE8\xED\x00\x00\x00\xE8\xF3\x00\x00\x00\xE9\xF7\xFF\xFF\xFF\x90\x90"
+  assert_eq(
+    bcj_x86(encoded[:], 0U, false),
+    b"\xE8\xE8\x00\x00\x00\xE8\xE9\x00\x00\x00\xE9\xE8\xFF\xFF\xFF\x90\x90",
+  )
+  assert_eq(
+    bcj_x86(b"\xE8\x05\x00\x00\xFF\x90"[:], 0U, false),
+    b"\xE8\x00\x00\x00\xFF\x90",
+  )
+}
