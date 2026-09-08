@@ -14,5 +14,6 @@
 | `lzma2.md` | `lzma2`，M5 |
 | `xz.md` | `xz`，M6 |
 | `filters.md` | `filters`，M7 |
+| `toolchain.md` | 强制工具链版本（非算法，仓库级要求） |
 
 每篇至少包含：Scope、Specification、Reference implementation、Data model、Algorithm、Invariants、Edge cases、Error cases、Test vectors、Compatibility notes、Open questions。
