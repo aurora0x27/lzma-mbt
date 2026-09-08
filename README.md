@@ -9,7 +9,7 @@ MoonBit 实现的 LZMA / LZMA2 / XZ 编解码库，目标对齐 `liblzma` 的外
 - 默认编码：`.xz` + preset 6 + CRC64
 - 默认解码：`Format::Auto`（`.xz` / LZMA_Alone；裸 LZMA2 须显式指定），内存上限 128 MiB（字典，不是明文长度）
 - LZMA1 / LZMA2 / XZ 可 round-trip；`.xz` 解码支持同一 Stream 内多个 Block（编码仍写单个 Block）；解码侧有嵌入的 `liblzma` 向量；编码侧由 CI 交给 `xz -d` / Python `lzma` 解回
-- `Preset.extreme`、容器内非 LZMA2/非 x86-BCJ 过滤器尚未实现（`UnsupportedFeature`）；`.xz` Block Header 过滤器链支持 LZMA2、`Delta -> LZMA2` 与 `x86 BCJ -> LZMA2`
+- `Preset.extreme`、容器内 PowerPC/IA64/ARM-Thumb/SPARC/ARM64 等 BCJ 过滤器尚未实现（`UnsupportedFeature`）；`.xz` Block Header 过滤器链支持 LZMA2、`Delta -> LZMA2`、`x86 BCJ -> LZMA2` 与 `ARM BCJ -> LZMA2`
 - 默认拒绝 `.xz` Footer 之后或裸 LZMA2 结束标记之后的多余字节；`DecodeOptions.concatenated=true` 时支持连接的多 `.xz` Stream 与规范 Stream Padding
 - 编码器是贪心匹配，不保证与 `xz -6` 字节相同
 

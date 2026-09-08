@@ -119,6 +119,7 @@ priv struct BlockFilters {
   dict_size : UInt
   delta_distance : Int
   x86 : Bool
+  arm : Bool
 }
 
 ///|
@@ -139,6 +140,7 @@ fn parse_block_filters(
   }
   let mut delta_distance = 0
   let mut x86 = false
+  let mut arm = false
   let mut dict_size = 0U
   let mut i = 0
   while i < nfilters {
@@ -152,7 +154,7 @@ fn parse_block_filters(
     if i == nfilters - 1 {
       // The final filter must be the LZMA2 codec. A recognized pre-filter in
       // the final position is an invalid chain; unknown IDs are unsupported.
-      if fid == 0x03UL || fid == 0x04UL {
+      if fid == 0x03UL || fid == 0x04UL || fid == 0x07UL {
         raise @coder.Data
       }
       if fid != 0x21UL {
@@ -163,9 +165,9 @@ fn parse_block_filters(
       }
       dict_size = @lzma2.lzma2_dict_size(props[0])
     } else {
-      // With at most two filters only one pre-filter can be listed; it is
-      // either Delta (0x03, one-byte property) or x86 BCJ (0x04, no options).
-      if fid != 0x03UL && fid != 0x04UL {
+      // With at most two filters only one pre-filter can be listed: Delta
+      // (0x03, one-byte property) or x86 / ARM BCJ (0x04 / 0x07, no options).
+      if fid != 0x03UL && fid != 0x04UL && fid != 0x07UL {
         raise @coder.Unsupported
       }
       if fid == 0x03UL {
@@ -177,12 +179,16 @@ fn parse_block_filters(
         if psz != 0 {
           raise @coder.Data
         }
-        x86 = true
+        if fid == 0x04UL {
+          x86 = true
+        } else {
+          arm = true
+        }
       }
     }
     i = i + 1
   }
-  { dict_size, delta_distance, x86, }
+  { dict_size, delta_distance, x86, arm, }
 }
 
 ///|
@@ -376,6 +382,8 @@ fn decode_one_block(
     }
   } else if filters.x86 {
     @filters.bcj_x86(filtered[:], 0U, false)
+  } else if filters.arm {
+    @filters.bcj_arm(filtered[:], 0U, false)
   } else {
     filtered
   }
@@ -738,13 +746,13 @@ pub fn StreamDecoder::feed(
       @coder.Eof => break
       err => raise err
     }
-    // x86 BCJ is a five-byte sliding-window filter, so Blocks using it are
-    // decoded whole (once their payload, padding, and Check are buffered)
-    // through the same one-shot path as Blocks without a declared compressed
-    // size. Delta Blocks keep the incremental per-chunk path.
+    // BCJ pre-filters operate on 4/5-byte-aligned windows, so Blocks using
+    // them are decoded whole (once their payload, padding, and Check are
+    // buffered) through the same one-shot path as Blocks without a declared
+    // compressed size. Delta Blocks keep the incremental per-chunk path.
     let whole = match header.declared_comp {
       None => true
-      Some(_) => header.filters.x86
+      Some(_) => header.filters.x86 || header.filters.arm
     }
     if whole {
       let (plain, unpadded, used) = decode_one_block(
@@ -800,10 +808,10 @@ pub fn StreamDecoder::finish(
 }
 
 ///|
-/// Encode a single-Block `.xz` Stream. `delta_distance` and `bcj_x86` select
-/// the optional container pre-filter written into the Block Header; at most
-/// one pre-filter is supported (x86 BCJ has no filter options, so it is
-/// stored as filter ID `0x04` with a zero-length property).
+/// Encode a single-Block `.xz` Stream. `delta_distance`, `bcj_x86`, and
+/// `bcj_arm` select the optional container pre-filter written into the Block
+/// Header; at most one pre-filter is supported (x86 BCJ filter ID `0x04`, ARM
+/// BCJ filter ID `0x07`; both store a zero-length property).
 pub fn encode_xz(
   input : BytesView,
   lc : Int,
@@ -813,6 +821,7 @@ pub fn encode_xz(
   check_id? : Int = 4,
   delta_distance? : Int = 0,
   bcj_x86? : Bool = false,
+  bcj_arm? : Bool = false,
 ) -> Bytes raise @coder.CoderError {
   // A single Block is enough for a well-formed stream; multi-Block splitting
   // is not required for decoder compatibility (see docs/research/xz.md).
@@ -820,11 +829,16 @@ pub fn encode_xz(
   if delta_distance < 0 || delta_distance > 256 {
     raise @coder.Data
   }
-  if bcj_x86 && delta_distance != 0 {
+  let npre = (if delta_distance != 0 { 1 } else { 0 }) +
+    (if bcj_x86 { 1 } else { 0 }) +
+    (if bcj_arm { 1 } else { 0 })
+  if npre > 1 {
     raise @coder.Data
   }
   let pre = if bcj_x86 {
     @filters.bcj_x86(input, 0U, true)
+  } else if bcj_arm {
+    @filters.bcj_arm(input, 0U, true)
   } else if delta_distance != 0 {
     @filters.delta_encode(input, delta_distance) catch {
       _ => raise @coder.Data
@@ -839,13 +853,17 @@ pub fn encode_xz(
   w.write_bytes(flags[:])
   w.write_u32_le(@checksum.crc32(flags[:]))
   let content = @bit.Writer::new()
-  let has_pre = bcj_x86 || delta_distance != 0
+  let has_pre = npre > 0
   content.write_u8(if has_pre { b'\xC1' } else { b'\xC0' })
   write_vli(content, payload.length().reinterpret_as_uint().to_uint64())
   write_vli(content, input.length().reinterpret_as_uint().to_uint64())
   if bcj_x86 {
     // x86 BCJ: filter ID 0x04, empty filter properties (size 0).
     content.write_u8(b'\x04')
+    content.write_u8(b'\x00')
+  } else if bcj_arm {
+    // ARM BCJ: filter ID 0x07, empty filter properties (size 0).
+    content.write_u8(b'\x07')
     content.write_u8(b'\x00')
   } else if delta_distance != 0 {
     content.write_u8(b'\x03')

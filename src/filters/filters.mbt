@@ -63,7 +63,7 @@ fn x86_le_u32_at(d : Array[Byte], i : Int) -> UInt {
 }
 
 ///|
-fn x86_byte_of(v : UInt) -> Byte {
+fn byte_of(v : UInt) -> Byte {
   (v & 0xFFU).reinterpret_as_int().to_byte()
 }
 
@@ -137,7 +137,7 @@ fn x86_filter_core(
         }
         let bit = x86_bit_number((prev_mask >> 1).reinterpret_as_int())
         let shift = 24 - bit * 8
-        b = x86_byte_of(dest >> shift)
+        b = byte_of(dest >> shift)
         if x86_test_msbyte(b) == false {
           break
         }
@@ -151,9 +151,9 @@ fn x86_filter_core(
       } else {
         b'\x00'
       }
-      d[buffer_pos + 3] = x86_byte_of(dest >> 16)
-      d[buffer_pos + 2] = x86_byte_of(dest >> 8)
-      d[buffer_pos + 1] = x86_byte_of(dest)
+      d[buffer_pos + 3] = byte_of(dest >> 16)
+      d[buffer_pos + 2] = byte_of(dest >> 8)
+      d[buffer_pos + 1] = byte_of(dest)
       buffer_pos = buffer_pos + 5
       prev_mask = 0U
     } else {
@@ -179,5 +179,37 @@ pub fn bcj_x86(input : BytesView, start_offset : UInt, encode : Bool) -> Bytes {
   }
   let n = data.length()
   ignore(x86_filter_core(data, n, start_offset, encode, 0U, 0xFFFFFFFBU))
+  Bytes::from_array(data[:])
+}
+
+///|
+/// ARM (32-bit) BCJ filter matching liblzma `simple/arm.c`: every 4-byte word
+/// whose top byte is `0xEB` (B/BL) has its 24-bit offset field adjusted by the
+/// 8-byte pipeline position `start_offset + i + 8`. `start_offset` is 32-bit
+/// wrapping; trailing bytes that are not part of a full word pass through.
+pub fn bcj_arm(input : BytesView, start_offset : UInt, encode : Bool) -> Bytes {
+  let data = Array(capacity=input.length())
+  for b in input {
+    data.push(b)
+  }
+  let n = data.length()
+  let size = n / 4 * 4
+  let mut i = 0
+  while i < size {
+    if data[i + 3] == b'\xEB' {
+      let src = (
+          data[i].to_int().reinterpret_as_uint() |
+          (data[i + 1].to_int().reinterpret_as_uint() << 8) |
+          (data[i + 2].to_int().reinterpret_as_uint() << 16)
+        ) <<
+        2
+      let base = start_offset + i.reinterpret_as_uint() + 8U
+      let dest = if encode { (base + src) >> 2 } else { (src - base) >> 2 }
+      data[i] = byte_of(dest)
+      data[i + 1] = byte_of(dest >> 8)
+      data[i + 2] = byte_of(dest >> 16)
+    }
+    i = i + 4
+  }
   Bytes::from_array(data[:])
 }

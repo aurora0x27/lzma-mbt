@@ -84,6 +84,23 @@ fn bcj_payload() -> Bytes {
 }
 
 ///|
+/// Deterministic ARM-laden payload (32-bit words with a `0xEB` top byte).
+fn arm_payload() -> Bytes {
+  let a = Array()
+  for k in 0..<300 {
+    let off = (k.reinterpret_as_uint() * 0xABCDU) & 0xFFFFFFU
+    push_u32_le(a, 0xEB000000U | off)
+  }
+  for _ in 0..<30 {
+    push_u32_le(a, 0xEBFFFFFFU)
+    push_u32_le(a, 0x12345678U)
+  }
+  a.push(b'\xEB')
+  a.push(b'\x01')
+  Bytes::from_array(a[:])
+}
+
+///|
 fn format_name(f : @lzma.Format) -> String {
   match f {
     Auto => "auto"
@@ -186,6 +203,7 @@ fn emit_xz_bcj_case(
   payload : Bytes,
   preset : Int,
   check : @lzma.Check,
+  arm : Bool,
 ) -> Unit raise @lzma.LzmaError {
   let options : @lzma.EncodeOptions = {
     format: Xz,
@@ -208,7 +226,8 @@ fn emit_xz_bcj_case(
     props.pb,
     props.dict_size,
     check_id~,
-    bcj_x86=true,
+    bcj_x86=!arm,
+    bcj_arm=arm,
   ) catch {
     @coder.Data => {
       println("ERROR DataError")
@@ -320,6 +339,14 @@ fn main {
       bcj_payload(),
       6,
       @lzma.Check::Crc64,
+      false,
+    )
+    emit_xz_bcj_case(
+      "short_xz_arm_p6_crc64",
+      arm_payload(),
+      6,
+      @lzma.Check::Crc64,
+      true,
     )
     emit_case(
       "empty_xz_p6_crc32",

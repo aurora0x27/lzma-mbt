@@ -98,3 +98,33 @@ test "bcj_x86_matches_liblzma_decode" {
     b"\xE8\x00\x00\x00\xFF\x90",
   )
 }
+
+///|
+test "bcj_arm_roundtrip" {
+  let src = b"\x00\x00\x00\xEB\x02\x00\x00\xEB\x78\x56\x34\x12\x90\x90\x90\x90"
+  let e = bcj_arm(src[:], 0U, true)
+  let d = bcj_arm(e[:], 0U, false)
+  assert_eq(d, src)
+}
+
+///|
+test "bcj_arm_known_transform" {
+  // A single B/BL word `00 00 00 EB` (LE) at offset 0 encodes to field 2
+  // (`(0 + 0 + 8) >> 2`); decoding restores the original.
+  assert_eq(bcj_arm(b"\x00\x00\x00\xEB"[:], 0U, true), b"\x02\x00\x00\xEB")
+  assert_eq(bcj_arm(b"\x02\x00\x00\xEB"[:], 0U, false), b"\x00\x00\x00\xEB")
+  // Second word of two, 4 bytes in: base = start_offset + 4 + 8.
+  let two = b"\x90\x90\x90\x90\x00\x00\x00\xEB"
+  assert_eq(bcj_arm(two[:], 0U, true), b"\x90\x90\x90\x90\x03\x00\x00\xEB")
+  // Non-zero, 32-bit wrapping start offset.
+  let wrap = b"\x00\x00\x00\xEB"
+  assert_eq(bcj_arm(wrap[:], 0xFFFFFFF8U, true), b"\x00\x00\x00\xEB")
+  let base = b"\x00\x00\x00\xEB"
+  assert_eq(bcj_arm(base[:], 4096U, true), b"\x02\x04\x00\xEB")
+  // A trailing partial word is never rewritten.
+  assert_eq(bcj_arm(b"\x00\x00\x00"[:], 0U, true), b"\x00\x00\x00")
+  assert_eq(
+    bcj_arm(b"\x00\x00\x00\xEB\x01"[:], 0U, true),
+    b"\x02\x00\x00\xEB\x01",
+  )
+}
