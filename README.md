@@ -47,7 +47,7 @@ let enc = @lzma.encode(src[:], options={
 
 ## 构建
 
-需要 MoonBit toolchain（本仓库 CI 使用 `moonbitlang/setup-moonbit@v1`）。**强制工具链版本 `moon 0.1.20260904`**（内置 core `0.10.12+1634b282e`），见 `docs/research/toolchain.md`；用其它版本时不要静默适配，先停下来确认。编码差分还需要 Python 3（标准库 `lzma`）以及 `xz`。
+需要 MoonBit toolchain（本仓库 CI 使用 `chawyehsu/setup-moonup@v1`，版本号见仓库根 `moonbit-version`）。**强制工具链版本 `moon 0.1.20260904`**（内置 core `0.10.12+1634b282e`，对应 moonup 发行标识 `0.10.12+1634b282e`），见 `docs/research/toolchain.md`；用其它版本时不要静默适配，先停下来确认。编码差分还需要 Python 3（标准库 `lzma`）以及 `xz`。
 
 ```text
 moon check --deny-warn

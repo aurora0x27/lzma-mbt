@@ -14,6 +14,14 @@ The mandatory toolchain is the one installed on the development machine:
 moon  0.1.20260904  (built-in core 0.10.12+1634b282e)
 ```
 
+The matching distribution identifier is pinned at the repository root in the
+`moonbit-version` file (honoured by moonup) and used by CI via
+`chawyehsu/setup-moonup@v1` `moonbit-version`:
+
+```text
+0.10.12+1634b282e
+```
+
 A task must be developed and verified with this version. If a machine has a
 different MoonBit version, do **not** silently adapt: either use the mandated
 version or stop and report the mismatch.
@@ -56,6 +64,9 @@ python3 scripts/diff_encode.py
   implements concatenated `.xz` decode, so the fix restored those files to the
   T7d content; this note, its index rows and the `README.md` build note are the
   only additions that remain relative to T7d.
+- 2026-09: CI switched from the non-existent `moonbitlang/setup-moonbit@v1` to
+  `chawyehsu/setup-moonup@v1`, pinning the distribution identifier (same value
+  as the committed `moonbit-version` file).
 
 ## Open questions
 
