@@ -41,20 +41,21 @@ python3 scripts/diff_encode.py
 
 | 项 | 最低回归 |
 | --- | --- |
-| T1 编码差分 | `scripts/diff_encode.py` 现有 30 案（空 / 短 / run / 不可压缩 / 跨 64 KiB / preset 0 与 6 / CRC32·CRC64·None·SHA-256 / XZ Delta+LZMA2 / XZ x86-BCJ+LZMA2 / XZ ARM-BCJ+LZMA2） |
+| T1 编码差分 | `scripts/diff_encode.py` 现有 31 案（空 / 短 / run / 不可压缩 / 跨 64 KiB / preset 0 与 6 / CRC32·CRC64·None·SHA-256 / XZ Delta+LZMA2 / XZ x86-BCJ+LZMA2 / XZ ARM-BCJ+LZMA2 / XZ ARM64-BCJ+LZMA2） |
 | T2 LZMA2 跨 chunk | `0xE0` 后 `0x80`、白盒 `0xA0`/`0xC0`、`0x01`+`0x02`、70 000 字节第二块为 `0x80`、liblzma 2 MiB+100 `'A'` 向量；打头 `0x80`/`0xA0`/`0xC0`/`0x02` 仍是 `Data` |
 | `.xz` 多 Block 解码 | `xz --block-size=2` 的 `"aabb"`（2 Block）与 `"aabbcc"`（3 Block）；空 Stream / 单 Block / Footer 后垃圾回归；Index 记录数或逐条 size 不符 → `DataError`；第二 Block Header/Data/Check 截断 → `Eof`；编码器 Index 仍为 1 条 |
 | XZ 容器内 Delta | 自编码 distance 1 / 4 / 256；`xz --delta=dist=1/4/256 --lzma2=preset=0` 参考 `.xz`；编码差分含 Delta+LZMA2 并由 Python `lzma` / `xz -d` 解码；非法属性长度、Delta 作为最后一条、三过滤器链均有负例 |
+| XZ 容器内 ARM64 BCJ | `bcj_arm64` 与 `lzma_bcj_arm64_*` 字节一致（BL/ADRP 向量）；`xz --arm64` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x0A` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM64-BCJ+LZMA2；ARM64 属性非空 / ARM64 作为最后一条 → `Data` |
 | XZ 容器内 ARM BCJ | `bcj_arm` 镜像 `simple/arm.c`；`xz --arm` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x07` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM-BCJ+LZMA2；ARM 属性非空 / ARM 作为最后一条 → `Data`；多前置过滤器同给 → `Data` |
 | XZ 容器内 x86 BCJ | `bcj_x86` 与 `lzma_bcj_x86_*` 字节一致（overlap / prev_mask 向量）；`xz --x86` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x04` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 x86-BCJ+LZMA2；x86 属性非空 / x86 作为最后一条 → `Data`，未知 prefilter / 三过滤器链 → `Unsupported` |
 
 ## T6 — 容器内过滤器链（其余 ISA）
 
-**问题**：容器内 Delta -> LZMA2、x86 BCJ（ID `0x04`）与 ARM BCJ（ID `0x07`）已落地（见回归表「XZ 容器内 x86/ARM BCJ」），BCJ 已统一为完整 liblzma 算法，后续不要重复实现 Delta、x86 或 ARM。
+**问题**：容器内 Delta -> LZMA2、x86 BCJ（ID `0x04`）、ARM BCJ（ID `0x07`）与 ARM64 BCJ（ID `0x0A`）已落地（见回归表「XZ 容器内 x86/ARM/ARM64 BCJ」），BCJ 已统一为完整 liblzma 算法，后续不要重复实现 Delta、x86、ARM 或 ARM64。
 
 **范围**（每个 ISA 单独一个子任务，不要一次做完所有 ISA）：
 
-- ARM64 / ARM-Thumb / PowerPC / IA64 / SPARC：各为一个后续子任务，先有研究笔记和参考向量再写码。每个子任务单独套用「通用完成门」。未做的 ISA 必须仍是 `UnsupportedFeature`，并保留负例。
+- ARM-Thumb / PowerPC / IA64 / SPARC：各为一个后续子任务，先有研究笔记和参考向量再写码。每个子任务单独套用「通用完成门」。未做的 ISA 必须仍是 `UnsupportedFeature`，并保留负例。
 
 **测试（每个子任务）**
 
@@ -176,7 +177,7 @@ Flush：
 ## 建议执行顺序
 
 ```text
-T6 容器内过滤器（其余 ISA：ARM64 / ARM-Thumb / PowerPC / IA64 / SPARC）
+T6 容器内过滤器（其余 ISA：ARM-Thumb / PowerPC / IA64 / SPARC）
  → T7 增量流式状态机（.lzma 增量余量）
  → T8 最优解析
 ```

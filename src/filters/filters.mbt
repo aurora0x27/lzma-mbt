@@ -213,3 +213,67 @@ pub fn bcj_arm(input : BytesView, start_offset : UInt, encode : Bool) -> Bytes {
   }
   Bytes::from_array(data[:])
 }
+
+///|
+fn le_u32_at(d : Array[Byte], i : Int) -> UInt {
+  d[i].to_int().reinterpret_as_uint() |
+  (d[i + 1].to_int().reinterpret_as_uint() << 8) |
+  (d[i + 2].to_int().reinterpret_as_uint() << 16) |
+  (d[i + 3].to_int().reinterpret_as_uint() << 24)
+}
+
+///|
+fn set_le_u32(d : Array[Byte], i : Int, v : UInt) -> Unit {
+  d[i] = byte_of(v)
+  d[i + 1] = byte_of(v >> 8)
+  d[i + 2] = byte_of(v >> 16)
+  d[i + 3] = byte_of(v >> 24)
+}
+
+///|
+/// ARM64 BCJ filter matching liblzma `simple/arm64.c` (`lzma_bcj_arm64_*`):
+/// converts the 26-bit immediate of `BL` instructions and the page immediate
+/// of `ADRP` instructions (the latter only within +/-512 MiB). Processing is
+/// 4-byte aligned from `start_offset`; `start_offset` is 32-bit wrapping and
+/// rounded down to a multiple of four.
+pub fn bcj_arm64(
+  input : BytesView,
+  start_offset : UInt,
+  encode : Bool,
+) -> Bytes {
+  let data = Array(capacity=input.length())
+  for b in input {
+    data.push(b)
+  }
+  let n = data.length()
+  let size = n / 4 * 4
+  let start = start_offset & 0xFFFFFFFCU
+  let mut i = 0
+  while i < size {
+    let pc = start + i.reinterpret_as_uint()
+    let instr0 = le_u32_at(data, i)
+    if instr0 >> 26 == 0x25U {
+      // BL: convert the full 26-bit immediate.
+      let src = instr0
+      let add = if encode { pc >> 2 } else { 0U - (pc >> 2) }
+      let imm = ((src + add) & 0x03FFFFFFU) | 0x94000000U
+      set_le_u32(data, i, imm)
+    } else if (instr0 & 0x9F000000U) == 0x90000000U {
+      // ADRP: convert only values within +/-512 MiB.
+      let src = ((instr0 >> 29) & 3U) | ((instr0 >> 3) & 0x001FFFFCU)
+      if ((src + 0x00020000U) & 0x001C0000U) != 0U {
+        i = i + 4
+        continue
+      }
+      let page = if encode { pc >> 12 } else { 0U - (pc >> 12) }
+      let dest = src + page
+      let mut instr = instr0 & 0x9000001FU
+      instr = instr | ((dest & 3U) << 29)
+      instr = instr | ((dest & 0x0003FFFCU) << 3)
+      instr = instr | ((0U - (dest & 0x00020000U)) & 0x00E00000U)
+      set_le_u32(data, i, instr)
+    }
+    i = i + 4
+  }
+  Bytes::from_array(data[:])
+}

@@ -9,7 +9,7 @@ import {
 // Values
 pub fn decode_xz(BytesView, UInt64, Bool, concatenated? : Bool) -> Bytes raise @coder.CoderError
 
-pub fn encode_xz(BytesView, Int, Int, Int, UInt, check_id? : Int, delta_distance? : Int, bcj_x86? : Bool, bcj_arm? : Bool) -> Bytes raise @coder.CoderError
+pub fn encode_xz(BytesView, Int, Int, Int, UInt, check_id? : Int, delta_distance? : Int, bcj_x86? : Bool, bcj_arm? : Bool, bcj_arm64? : Bool) -> Bytes raise @coder.CoderError
 
 // Errors
 

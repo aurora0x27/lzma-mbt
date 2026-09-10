@@ -128,3 +128,33 @@ test "bcj_arm_known_transform" {
     b"\x02\x00\x00\xEB\x01",
   )
 }
+
+///|
+test "bcj_arm64_roundtrip" {
+  let src = b"\x00\x00\x00\x94\xFF\xFF\xFF\x97\x00\x00\x08\x91\xF0\x03\x00\x91\xC0\x03\x5F\xD6"
+  let e = bcj_arm64(src[:], 0U, true)
+  let d = bcj_arm64(e[:], 0U, false)
+  assert_eq(d, src)
+}
+
+///|
+test "bcj_arm64_matches_liblzma" {
+  // Exact outputs of `lzma_bcj_arm64_encode/decode` (xz 5.8).
+  // BL word at a 4096-byte offset: immediate gains pc >> 2 = 0x400.
+  let bl = b"\x00\x00\x00\x94"
+  assert_eq(bcj_arm64(bl[:], 4096U, true), b"\x00\x04\x00\x94")
+  // A BL followed by an in-range ADRP at the same offset.
+  let two = b"\x00\x00\x00\x94\x00\xF0\x07\x90"
+  assert_eq(bcj_arm64(two[:], 4096U, true), b"\x00\x04\x00\x94\x00\xF0\x07\xB0")
+  assert_eq(
+    bcj_arm64(b"\x00\x04\x00\x94\x00\xF0\x07\xB0"[:], 4096U, false),
+    two,
+  )
+  // Out-of-range ADRP is left untouched.
+  assert_eq(bcj_arm64(b"\x00\x00\x08\x91"[:], 0U, true), b"\x00\x00\x08\x91")
+  // A trailing partial word is never rewritten.
+  assert_eq(
+    bcj_arm64(b"\x00\x00\x00\x94\x01"[:], 0U, true),
+    b"\x00\x00\x00\x94\x01",
+  )
+}

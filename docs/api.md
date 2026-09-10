@@ -223,7 +223,7 @@ pub fn DecodeOptions::default() -> DecodeOptions {
 }
 ```
 
-`FilterSpec` 定义在根包（`options.mbt`）。`filters` 包只提供 `delta_encode` / `delta_decode` / `bcj_x86` / `bcj_arm` 原语。
+`FilterSpec` 定义在根包（`options.mbt`）。`filters` 包只提供 `delta_encode` / `delta_decode` / `bcj_x86` / `bcj_arm` / `bcj_arm64` 原语。
 
 ```moonbit
 pub(all) enum FilterSpec {
@@ -241,7 +241,7 @@ pub(all) enum FilterSpec {
 - `Preset.extreme` → `UnsupportedFeature`
 - 链里的 `Lzma1`/`Lzma2`、Delta `distance` 不在 `1..=256` → `InvalidConfiguration`
 - `.xz` + `Check::None` 允许，且必须能被解码器识别
-- 根包 `filters` 是**额外**前后处理（先 Delta/BCJ，再交给容器编解码）。`.xz` Block Header 内过滤器由 `xz` 包独立处理；本版本支持 LZMA2、`Delta -> LZMA2`、`x86 BCJ -> LZMA2` 与 `ARM BCJ -> LZMA2`
+- 根包 `filters` 是**额外**前后处理（先 Delta/BCJ，再交给容器编解码）。`.xz` Block Header 内过滤器由 `xz` 包独立处理；本版本支持 LZMA2、`Delta -> LZMA2`、`x86 BCJ -> LZMA2`、`ARM BCJ -> LZMA2` 与 `ARM64 BCJ -> LZMA2`
 - `memlimit` 限制**解码字典/状态内存**（`None` → 128 MiB），不限制解压后明文长度。裸 LZMA2 流内没有字典字段，用 `min(memlimit, MAX_DICT_SIZE)` 作为字典上限。LZMA_Alone 头里过小的 dict 会先上取整到 4096 再与 `memlimit` 比较
 - `Format::Auto` 只认 `.xz` 魔数与合法 LZMA_Alone 属性字节（`lc+lp <= 4`）。典型裸 LZMA2（控制字节 `0xE0`）→ `FormatError`，须显式 `Format::Lzma2`。显式 `Format::Lzma` 时，长度 ≥ 13 且属性字节不合法同样 → `FormatError`；更短的截断头由解码器报 `UnexpectedEof`。`Auto` 下：不完整 `.xz` 魔数前缀，或长度 `1..=12` 且首字节是合法 LZMA 属性 → `UnexpectedEof`。显式 `Format::Xz` 且输入短于 6 字节 → `UnexpectedEof`
 - `EncodeOptions.check` 只作用于 `Format::Xz`；LZMA / LZMA2 裸流忽略该字段
@@ -299,14 +299,15 @@ pub fn decode_lzma2_consumed(input, memlimit, dict_size?) -> (Bytes, Int) raise 
 // `decode_lzma2_consumed` 返回消费的压缩字节数，供 `.xz` Block 后面的 Padding/Check/Index 继续解析
 
 // aurora0x27/lzma-mbt/xz
-pub fn encode_xz(..., check_id? : Int = 4, delta_distance? : Int = 0, bcj_x86? : Bool = false, bcj_arm? : Bool = false) -> Bytes raise CoderError
+pub fn encode_xz(..., check_id? : Int = 4, delta_distance? : Int = 0, bcj_x86? : Bool = false, bcj_arm? : Bool = false, bcj_arm64? : Bool = false) -> Bytes raise CoderError
 pub fn decode_xz(input, memlimit, ignore_check : Bool, concatenated? : Bool = false) -> Bytes raise CoderError
 // concatenated=false 时，Stream Footer `YZ` 之后若仍有字节 → Data
 // concatenated=true 时，Footer 后可跟规范 Stream Padding 与下一个 .xz Stream
 // 容器内前置过滤器最多一条：全 false 只写 LZMA2；
 // delta_distance 1..=256 写 Delta(ID 0x03, 属性 distance-1) + LZMA2；
 // bcj_x86=true 写 x86 BCJ(ID 0x04, 无属性) + LZMA2；
-// bcj_arm=true 写 ARM BCJ(ID 0x07, 无属性) + LZMA2（多个同时给 → Data）
+// bcj_arm=true 写 ARM BCJ(ID 0x07, 无属性) + LZMA2；
+// bcj_arm64=true 写 ARM64 BCJ(ID 0x0A, 无属性) + LZMA2（多个同时给 → Data）
 ```
 
 根包 `encode`/`decode` 按 `options.format` 分派到这些函数。`check_id` 只接受 `0` / `1` / `4` / `10`。
@@ -565,7 +566,7 @@ fn decompress_chunks(chunks : Array[Bytes]) -> Bytes raise LzmaError {
 4. 一次性 LZMA_Alone 写真实未压缩大小。
 5. 错误按标签匹配；`String` 载荷不是稳定 API。
 6. 单 Stream `.xz` 在 Footer 之后不得有剩余字节，除非 `DecodeOptions.concatenated=true`；裸 LZMA2 在结束标记之后同样不得有剩余字节。
-7. `.xz` 解码器接受 0..N 个 Block；Index 记录必须与各 Block 的 Unpadded Size / Uncompressed Size 逐条一致。编码器当前仍只写 1 个 Block。Block Header 里的 Compressed Size 与 Uncompressed Size（编码器两者都写）必须与 LZMA2 消费字节数 / 最终明文长度一致。VLI 禁止非最短编码。Check 支持 None / CRC32 / CRC64 / SHA-256。Block Header 内过滤器链支持 LZMA2、`Delta -> LZMA2`、`x86 BCJ -> LZMA2` 与 `ARM BCJ -> LZMA2`（每条链最多一条前置过滤器）；根包 `EncodeOptions.filters` / `DecodeOptions.filters` 仍表示容器外额外变换。
+7. `.xz` 解码器接受 0..N 个 Block；Index 记录必须与各 Block 的 Unpadded Size / Uncompressed Size 逐条一致。编码器当前仍只写 1 个 Block。Block Header 里的 Compressed Size 与 Uncompressed Size（编码器两者都写）必须与 LZMA2 消费字节数 / 最终明文长度一致。VLI 禁止非最短编码。Check 支持 None / CRC32 / CRC64 / SHA-256。Block Header 内过滤器链支持 LZMA2、`Delta -> LZMA2`、`x86 BCJ -> LZMA2`、`ARM BCJ -> LZMA2` 与 `ARM64 BCJ -> LZMA2`（每条链最多一条前置过滤器）；根包 `EncodeOptions.filters` / `DecodeOptions.filters` 仍表示容器外额外变换。
 
 ---
 

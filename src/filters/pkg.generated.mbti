@@ -8,6 +8,8 @@ import {
 // Values
 pub fn bcj_arm(BytesView, UInt, Bool) -> Bytes
 
+pub fn bcj_arm64(BytesView, UInt, Bool) -> Bytes
+
 pub fn bcj_x86(BytesView, UInt, Bool) -> Bytes
 
 pub fn delta_decode(BytesView, Int) -> Bytes raise FilterError

@@ -2,7 +2,7 @@
 
 ## Scope
 
-Single-stream and concatenated `.xz` files with one or more Blocks per Stream, LZMA2 filter, an optional Delta, x86-BCJ, or ARM-BCJ filter before LZMA2, and Check None / CRC32 / CRC64 / SHA-256. Other ISA container filters (ARM64/ARM-Thumb/PowerPC/IA64/SPARC/...) are out of scope (raise `UnsupportedFeature`).
+Single-stream and concatenated `.xz` files with one or more Blocks per Stream, LZMA2 filter, an optional Delta, x86-BCJ, ARM-BCJ, or ARM64-BCJ filter before LZMA2, and Check None / CRC32 / CRC64 / SHA-256. Other ISA container filters (ARM-Thumb/PowerPC/IA64/SPARC/...) are out of scope (raise `UnsupportedFeature`).
 
 The encoder still writes exactly one Block. The decoder accepts 0..N Blocks.
 
@@ -21,7 +21,7 @@ The encoder still writes exactly one Block. The decoder accepts 0..N Blocks.
 
 Check IDs used: `0` None, `1` CRC32, `4` CRC64, `0x0A` SHA-256.
 
-Delta filter ID is `0x03` with a 1-byte distance property encoded as `distance - 1`. x86 BCJ filter ID is `0x04` and ARM BCJ filter ID is `0x07`; both have **no** filter properties (zero-length). LZMA2 filter ID is `0x21` with a 1-byte dictionary property. The supported chains are `LZMA2`, `Delta -> LZMA2`, `x86 -> LZMA2`, and `ARM -> LZMA2` (at most one pre-filter before LZMA2).
+Delta filter ID is `0x03` with a 1-byte distance property encoded as `distance - 1`. x86 BCJ filter ID is `0x04`, ARM BCJ filter ID is `0x07`, and ARM64 BCJ filter ID is `0x0A`; all three have **no** filter properties (zero-length). LZMA2 filter ID is `0x21` with a 1-byte dictionary property. The supported chains are `LZMA2`, `Delta -> LZMA2`, `x86 -> LZMA2`, `ARM -> LZMA2`, and `ARM64 -> LZMA2` (at most one pre-filter before LZMA2).
 
 Unpadded Size in the Index is Block Header + Compressed Data + Check, excluding Block Padding.
 
@@ -31,15 +31,15 @@ XZ Utils `stream_encoder.c` / `block_decoder.c` / `index.c`. Layout taken from t
 
 ## Data model
 
-This encoder writes exactly one Block with compressed-size and uncompressed-size present (`Block Flags` bits 6 and 7), one LZMA2 filter optionally preceded by a Delta, x86 BCJ, or ARM BCJ filter record, then Index and Footer.
+This encoder writes exactly one Block with compressed-size and uncompressed-size present (`Block Flags` bits 6 and 7), one LZMA2 filter optionally preceded by a Delta, x86 BCJ, ARM BCJ, or ARM64 BCJ filter record, then Index and Footer.
 
 The decoder loops: while the next byte is not `0x00`, parse a Block; then parse Index and Footer. Index `Number of Records` must equal the number of Blocks actually decoded; each record's Unpadded Size and Uncompressed Size must match that Block.
 
 ## Algorithm
 
-Encode: optionally pre-filter plaintext with Delta, x86 BCJ, or ARM BCJ (at most one) → LZMA2-compress the filtered bytes → Stream Header → Block Header (size byte is `(1 + content) / 4`, content padded so the header without CRC is a multiple of 4) → payload → pad → check of **uncompressed** bytes → Index (one record) → Footer.
+Encode: optionally pre-filter plaintext with Delta, x86 BCJ, ARM BCJ, or ARM64 BCJ (at most one) → LZMA2-compress the filtered bytes → Stream Header → Block Header (size byte is `(1 + content) / 4`, content padded so the header without CRC is a multiple of 4) → payload → pad → check of **uncompressed** bytes → Index (one record) → Footer.
 
-Decode one Stream: verify magic and header CRCs; for each Block, require the final filter to be LZMA2 and allow at most one preceding Delta, x86, or ARM filter; if Compressed Size is present, only that many bytes are fed to the LZMA2 decoder and they must be consumed exactly (the `0x00` end marker must be the last byte of that window); undo the pre-filter on the LZMA2 output (Delta-decode, or x86/ARM-decode with `start_offset` 0); if Uncompressed Size is present, it must equal the final plaintext length; if Compressed Size is absent, parse LZMA2 until the `0x00` end marker (subsequent Blocks / Index are not part of that window because the LZMA2 decoder stops at the end marker); skip Block Padding; verify that Block's check over the final plaintext unless `ignore_check`. Concatenate plaintext across Blocks. Index records must match every Block (zero records for an empty Stream).
+Decode one Stream: verify magic and header CRCs; for each Block, require the final filter to be LZMA2 and allow at most one preceding Delta, x86, ARM, or ARM64 filter; if Compressed Size is present, only that many bytes are fed to the LZMA2 decoder and they must be consumed exactly (the `0x00` end marker must be the last byte of that window); undo the pre-filter on the LZMA2 output (Delta-decode, or x86/ARM/ARM64-decode with `start_offset` 0); if Uncompressed Size is present, it must equal the final plaintext length; if Compressed Size is absent, parse LZMA2 until the `0x00` end marker (subsequent Blocks / Index are not part of that window because the LZMA2 decoder stops at the end marker); skip Block Padding; verify that Block's check over the final plaintext unless `ignore_check`. Concatenate plaintext across Blocks. Index records must match every Block (zero records for an empty Stream).
 
 With `concatenated=false`, any byte after the Stream Footer magic `YZ` is `Data`. With `concatenated=true`, after each Footer the decoder skips Stream Padding (null bytes only, length multiple of four) and decodes the next `.xz` Stream if bytes remain. A truncated next Stream header is `Eof`; non-null padding or padding whose zero run is not a multiple of four is `Data`.
 
@@ -49,6 +49,7 @@ With `concatenated=false`, any byte after the Stream Footer magic `YZ` is `Data`
 - `decode_xz(encode_xz(x, delta_distance=d)) == x` for Delta distances 1, 4, and 256
 - `decode_xz(encode_xz(x, bcj_x86=true)) == x` (self-encoded x86 BCJ Blocks)
 - `decode_xz(encode_xz(x, bcj_arm=true)) == x` (self-encoded ARM BCJ Blocks)
+- `decode_xz(encode_xz(x, bcj_arm64=true)) == x` (self-encoded ARM64 BCJ Blocks)
 - `decode_xz(stream_a || padding || stream_b, concatenated=true) == plain_a || plain_b` when `padding` is all zeros and its length is a multiple of four
 - Header and Index CRCs match `crc32` of the documented fields
 - Footer ends with `YZ`
@@ -59,12 +60,12 @@ With `concatenated=false`, any byte after the Stream Footer magic `YZ` is `Data`
 - VLIs use the shortest encoding; Block Header padding after the filter properties is zeros
 - Unknown filter ID or unknown Check ID → `UnsupportedFeature`
 - Chains with more than two filters (more than one pre-filter before LZMA2) → `UnsupportedFeature`
-- Delta, x86 BCJ, or ARM BCJ as the final filter, or malformed Delta/LZMA2/x86/ARM properties → `Data` (x86 and ARM BCJ must have a zero-length property)
+- Delta, x86 BCJ, ARM BCJ, or ARM64 BCJ as the final filter, or malformed Delta/LZMA2/x86/ARM/ARM64 properties → `Data` (x86/ARM/ARM64 BCJ must have a zero-length property)
 - Stream Flags reserved bits, Block Flags reserved bits, Footer CRC mismatch, Backward Size mismatch, Footer Flags copy mismatch, Index padding ≠ 0, Block Padding ≠ 0 → `Data`
 
 ## Edge cases
 
-Empty payload (0 Blocks, empty Index); single Block; 2+ Blocks; compressed size VLI of one byte; check field length 0/4/8/32; dictionary property for 4 KiB vs preset-6 8 MiB; Delta distances 1/4/256; x86 BCJ blocks with adjacent/overlapping E8/E9 and 0x00/0xFF immediate top bytes; ARM BCJ blocks with `0xEB` words and a trailing partial word; truncation in a later Block's Header / Data / Check; two and three concatenated Streams; Stream Padding of 4 and 8 null bytes between Streams.
+Empty payload (0 Blocks, empty Index); single Block; 2+ Blocks; compressed size VLI of one byte; check field length 0/4/8/32; dictionary property for 4 KiB vs preset-6 8 MiB; Delta distances 1/4/256; x86 BCJ blocks with adjacent/overlapping E8/E9 and 0x00/0xFF immediate top bytes; ARM BCJ blocks with `0xEB` words and ARM64 BCJ blocks with BL/ADRP words (including an out-of-range ADRP), plus trailing partial words; truncation in a later Block's Header / Data / Check; two and three concatenated Streams; Stream Padding of 4 and 8 null bytes between Streams.
 
 ## Error cases
 
@@ -72,12 +73,12 @@ Bad magic; Stream Flags CRC mismatch; Block Header CRC mismatch; non-zero header
 
 ## Test vectors
 
-Self-encoded `"xz container roundtrip"`; empty; CRC32 / SHA-256 checks; self-encoded Delta distances 1 / 4 / 256; self-encoded x86 BCJ Block (1808-byte x86-laden payload) round-trip plus Block Header record checks; mutated filter ID `0x21 → 0x06`; malformed Delta property size; x86/ARM property size must be zero; Delta as final filter; x86/ARM BCJ as final filter; unknown pre-filter ID (`0x05`); three-filter chain; `notxz!` magic; non-zero Block Data Padding; Index `Number of Records` not equal to the Block count; unknown Check ID on decode; `liblzma` FORMAT_XZ vectors for empty, `"hello lzma"`, `"a"`, and 64-byte `0xAA` run; `xz --block-size=2 --check=crc32` vectors for `"aabb"` (2 Blocks) and `"aabbcc"` (3 Blocks); `xz --check=sha256` vector for `"sha256 reference"`; `xz --delta=dist=1/4/256 --lzma2=preset=0 --check=crc32` vectors for `"abcdefabcdef"`; `xz --x86 --lzma2=preset=6 --check=crc64` vector for the same 1808-byte payload, and `xz --arm --lzma2=preset=6 --check=crc64` vector for a 1922-byte ARM payload. Concatenated tests cover two self-encoded Streams, 4- and 8-byte Stream Padding, three Streams including an empty Stream, `Format::Auto`, streaming `Decoder::write` plus `finish`, default rejection, malformed padding, and truncated next headers. Encode-side CI dumps this encoder's `.xz` (CRC32 / CRC64 / None / SHA-256, Delta+LZMA2, x86-BCJ+LZMA2, ARM-BCJ+LZMA2, presets 0 and 6, including >64 KiB) and requires Python `lzma.FORMAT_XZ` plus `xz -d` to recover the plaintext. Encoder output remains a single Block.
+Self-encoded `"xz container roundtrip"`; empty; CRC32 / SHA-256 checks; self-encoded Delta distances 1 / 4 / 256; self-encoded x86 BCJ Block (1808-byte x86-laden payload) round-trip plus Block Header record checks; mutated filter ID `0x21 → 0x06`; malformed Delta property size; x86/ARM/ARM64 property size must be zero; Delta as final filter; x86/ARM/ARM64 BCJ as final filter; unknown pre-filter ID (`0x05`); three-filter chain; `notxz!` magic; non-zero Block Data Padding; Index `Number of Records` not equal to the Block count; unknown Check ID on decode; `liblzma` FORMAT_XZ vectors for empty, `"hello lzma"`, `"a"`, and 64-byte `0xAA` run; `xz --block-size=2 --check=crc32` vectors for `"aabb"` (2 Blocks) and `"aabbcc"` (3 Blocks); `xz --check=sha256` vector for `"sha256 reference"`; `xz --delta=dist=1/4/256 --lzma2=preset=0 --check=crc32` vectors for `"abcdefabcdef"`; `xz --x86 --lzma2=preset=6 --check=crc64` vector for the same 1808-byte payload, and `xz --arm --lzma2=preset=6 --check=crc64` vector for a 1922-byte ARM payload and an `xz --arm64 --lzma2=preset=6 --check=crc64` vector for a 1682-byte ARM64 payload. Concatenated tests cover two self-encoded Streams, 4- and 8-byte Stream Padding, three Streams including an empty Stream, `Format::Auto`, streaming `Decoder::write` plus `finish`, default rejection, malformed padding, and truncated next headers. Encode-side CI dumps this encoder's `.xz` (CRC32 / CRC64 / None / SHA-256, Delta+LZMA2, x86-BCJ+LZMA2, ARM-BCJ+LZMA2, ARM64-BCJ+LZMA2, presets 0 and 6, including >64 KiB) and requires Python `lzma.FORMAT_XZ` plus `xz -d` to recover the plaintext. Encoder output remains a single Block.
 
 ## Compatibility notes
 
-Files are intended to be well-formed `.xz` for the subset above. Byte-level match with `xz -6` is not required (different LZMA encoder). Decoder-side `liblzma` vectors are embedded in `xz_test.mbt`. Encoder output is checked by a reference decoder in CI (`scripts/diff_encode.py`). Multi-Block **decode** is checked against `xz --block-size=` files; concatenated decode is checked with self-encoded Streams because `.xz` Stream Padding and header boundaries are container-level syntax independent of the LZMA payload. Delta+LZMA2, x86-BCJ+LZMA2, and ARM-BCJ+LZMA2 decode use embedded `xz` reference files, and those container chains' encode output is decoded by Python `lzma` and `xz -d`. This encoder does not emit multiple Blocks or concatenated Streams.
+Files are intended to be well-formed `.xz` for the subset above. Byte-level match with `xz -6` is not required (different LZMA encoder). Decoder-side `liblzma` vectors are embedded in `xz_test.mbt`. Encoder output is checked by a reference decoder in CI (`scripts/diff_encode.py`). Multi-Block **decode** is checked against `xz --block-size=` files; concatenated decode is checked with self-encoded Streams because `.xz` Stream Padding and header boundaries are container-level syntax independent of the LZMA payload. Delta+LZMA2, x86-BCJ+LZMA2, ARM-BCJ+LZMA2, and ARM64-BCJ+LZMA2 decode use embedded `xz` reference files, and those container chains' encode output is decoded by Python `lzma` and `xz -d`. This encoder does not emit multiple Blocks or concatenated Streams.
 
 ## Open questions
 
-Other ISA BCJ filters (ARM64/ARM-Thumb/PowerPC/IA64/SPARC) inside the Block Header remain out of scope until each has a research note and per-ISA reference vectors. Whether the encoder should split large plaintext into multiple Blocks or emit concatenated Streams is a later task; it is not required for decoder compatibility.
+Other ISA BCJ filters (ARM-Thumb/PowerPC/IA64/SPARC) inside the Block Header remain out of scope until each has a research note and per-ISA reference vectors. Whether the encoder should split large plaintext into multiple Blocks or emit concatenated Streams is a later task; it is not required for decoder compatibility.
