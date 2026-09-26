@@ -277,3 +277,47 @@ pub fn bcj_arm64(
   }
   Bytes::from_array(data[:])
 }
+
+///|
+/// ARM-Thumb BCJ filter matching liblzma `simple/armthumb.c`: a 32-bit Thumb
+/// `BL` pair (`F0.. F8..`) has its 25-bit offset field adjusted by the
+/// four-byte pipeline position `start_offset + i + 4`. Halfword-aligned from
+/// `start_offset` (start offsets must be even); trailing bytes that are not
+/// part of a full pair pass through.
+pub fn bcj_armthumb(
+  input : BytesView,
+  start_offset : UInt,
+  encode : Bool,
+) -> Bytes {
+  let data = Array(capacity=input.length())
+  for b in input {
+    data.push(b)
+  }
+  let n = data.length()
+  if n < 4 {
+    return Bytes::from_array(data[:])
+  }
+  let limit = n - 4
+  let mut i = 0
+  while i <= limit {
+    if (data[i + 1].to_int() & 0xF8) == 0xF0 &&
+      (data[i + 3].to_int() & 0xF8) == 0xF8 {
+      let src = (
+          ((data[i + 1].to_int() & 7).reinterpret_as_uint() << 19) |
+          (data[i].to_int().reinterpret_as_uint() << 11) |
+          ((data[i + 3].to_int() & 7).reinterpret_as_uint() << 8) |
+          data[i + 2].to_int().reinterpret_as_uint()
+        ) <<
+        1
+      let base = start_offset + i.reinterpret_as_uint() + 4U
+      let dest = (if encode { base + src } else { src - base }) >> 1
+      data[i + 1] = byte_of(0xF0U | ((dest >> 19) & 7U))
+      data[i] = byte_of(dest >> 11)
+      data[i + 3] = byte_of(0xF8U | ((dest >> 8) & 7U))
+      data[i + 2] = byte_of(dest)
+      i = i + 2
+    }
+    i = i + 2
+  }
+  Bytes::from_array(data[:])
+}

@@ -121,6 +121,7 @@ priv struct BlockFilters {
   x86 : Bool
   arm : Bool
   arm64 : Bool
+  armthumb : Bool
 }
 
 ///|
@@ -143,6 +144,7 @@ fn parse_block_filters(
   let mut x86 = false
   let mut arm = false
   let mut arm64 = false
+  let mut armthumb = false
   let mut dict_size = 0U
   let mut i = 0
   while i < nfilters {
@@ -156,7 +158,11 @@ fn parse_block_filters(
     if i == nfilters - 1 {
       // The final filter must be the LZMA2 codec. A recognized pre-filter in
       // the final position is an invalid chain; unknown IDs are unsupported.
-      if fid == 0x03UL || fid == 0x04UL || fid == 0x07UL || fid == 0x0AUL {
+      if fid == 0x03UL ||
+        fid == 0x04UL ||
+        fid == 0x07UL ||
+        fid == 0x08UL ||
+        fid == 0x0AUL {
         raise @coder.Data
       }
       if fid != 0x21UL {
@@ -169,7 +175,11 @@ fn parse_block_filters(
     } else {
       // With at most two filters only one pre-filter can be listed: Delta
       // (0x03, one-byte property) or x86 / ARM BCJ (0x04 / 0x07, no options).
-      if fid != 0x03UL && fid != 0x04UL && fid != 0x07UL && fid != 0x0AUL {
+      if fid != 0x03UL &&
+        fid != 0x04UL &&
+        fid != 0x07UL &&
+        fid != 0x08UL &&
+        fid != 0x0AUL {
         raise @coder.Unsupported
       }
       if fid == 0x03UL {
@@ -185,14 +195,16 @@ fn parse_block_filters(
           x86 = true
         } else if fid == 0x07UL {
           arm = true
-        } else {
+        } else if fid == 0x0AUL {
           arm64 = true
+        } else {
+          armthumb = true
         }
       }
     }
     i = i + 1
   }
-  { dict_size, delta_distance, x86, arm, arm64, }
+  { dict_size, delta_distance, x86, arm, arm64, armthumb, }
 }
 
 ///|
@@ -390,6 +402,8 @@ fn decode_one_block(
     @filters.bcj_arm(filtered[:], 0U, false)
   } else if filters.arm64 {
     @filters.bcj_arm64(filtered[:], 0U, false)
+  } else if filters.armthumb {
+    @filters.bcj_armthumb(filtered[:], 0U, false)
   } else {
     filtered
   }
@@ -759,7 +773,10 @@ pub fn StreamDecoder::feed(
     let whole = match header.declared_comp {
       None => true
       Some(_) =>
-        header.filters.x86 || header.filters.arm || header.filters.arm64
+        header.filters.x86 ||
+        header.filters.arm ||
+        header.filters.arm64 ||
+        header.filters.armthumb
     }
     if whole {
       let (plain, unpadded, used) = decode_one_block(
@@ -830,6 +847,7 @@ pub fn encode_xz(
   bcj_x86? : Bool = false,
   bcj_arm? : Bool = false,
   bcj_arm64? : Bool = false,
+  bcj_armthumb? : Bool = false,
 ) -> Bytes raise @coder.CoderError {
   // A single Block is enough for a well-formed stream; multi-Block splitting
   // is not required for decoder compatibility (see docs/research/xz.md).
@@ -840,7 +858,8 @@ pub fn encode_xz(
   let npre = (if delta_distance != 0 { 1 } else { 0 }) +
     (if bcj_x86 { 1 } else { 0 }) +
     (if bcj_arm { 1 } else { 0 }) +
-    (if bcj_arm64 { 1 } else { 0 })
+    (if bcj_arm64 { 1 } else { 0 }) +
+    (if bcj_armthumb { 1 } else { 0 })
   if npre > 1 {
     raise @coder.Data
   }
@@ -850,6 +869,8 @@ pub fn encode_xz(
     @filters.bcj_arm(input, 0U, true)
   } else if bcj_arm64 {
     @filters.bcj_arm64(input, 0U, true)
+  } else if bcj_armthumb {
+    @filters.bcj_armthumb(input, 0U, true)
   } else if delta_distance != 0 {
     @filters.delta_encode(input, delta_distance) catch {
       _ => raise @coder.Data
@@ -879,6 +900,10 @@ pub fn encode_xz(
   } else if bcj_arm64 {
     // ARM64 BCJ: filter ID 0x0A, empty filter properties (size 0).
     content.write_u8(b'\x0A')
+    content.write_u8(b'\x00')
+  } else if bcj_armthumb {
+    // ARM-Thumb BCJ: filter ID 0x08, empty filter properties (size 0).
+    content.write_u8(b'\x08')
     content.write_u8(b'\x00')
   } else if delta_distance != 0 {
     content.write_u8(b'\x03')

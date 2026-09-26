@@ -158,3 +158,33 @@ test "bcj_arm64_matches_liblzma" {
     b"\x00\x00\x00\x94\x01",
   )
 }
+
+///|
+test "bcj_armthumb_roundtrip" {
+  let src = b"\x00\xF0\x00\xF8\x11\xF8\x22\xF0\x33\x00\x44\xFF\x10\xF3\x20\xFB"
+  let e = bcj_armthumb(src[:], 0U, true)
+  let d = bcj_armthumb(e[:], 0U, false)
+  assert_eq(d, src)
+}
+
+///|
+test "bcj_armthumb_transform" {
+  // A Thumb BL pair `00 F0 00 F8` at offset 0: base = 0 + 0 + 4, field 0.
+  assert_eq(bcj_armthumb(b"\x00\xF0\x00\xF8"[:], 0U, true), b"\x00\xF0\x02\xF8")
+  assert_eq(
+    bcj_armthumb(b"\x00\xF0\x02\xF8"[:], 0U, false),
+    b"\x00\xF0\x00\xF8",
+  )
+  // The same pair at a 4096-byte start offset.
+  assert_eq(
+    bcj_armthumb(b"\x00\xF0\x00\xF8"[:], 4096U, true),
+    b"\x01\xF0\x02\xF8",
+  )
+  // Non-matching halfwords are untouched; fewer than 4 bytes is untouched.
+  assert_eq(bcj_armthumb(b"\x00\xF8\x00\xF0"[:], 0U, true), b"\x00\xF8\x00\xF0")
+  assert_eq(bcj_armthumb(b"\x00\xF0\x00"[:], 0U, true), b"\x00\xF0\x00")
+  assert_eq(
+    bcj_armthumb(b"\x00\xF0\x00\xF8\x01"[:], 0U, true),
+    b"\x00\xF0\x02\xF8\x01",
+  )
+}
