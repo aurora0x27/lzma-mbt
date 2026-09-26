@@ -321,3 +321,40 @@ pub fn bcj_armthumb(
   }
   Bytes::from_array(data[:])
 }
+
+///|
+/// PowerPC (big-endian) BCJ filter matching liblzma `simple/powerpc.c`: a
+/// 4-byte big-endian branch word (`(b0 >> 2) == 0x12` and `(b3 & 3) == 1`) has
+/// its 24-bit offset field adjusted by the word position `start_offset + i`.
+/// Processing is four-byte aligned from `start_offset`; trailing bytes pass
+/// through.
+pub fn bcj_powerpc(
+  input : BytesView,
+  start_offset : UInt,
+  encode : Bool,
+) -> Bytes {
+  let data = Array(capacity=input.length())
+  for b in input {
+    data.push(b)
+  }
+  let n = data.length()
+  let size = n / 4 * 4
+  let mut i = 0
+  while i < size {
+    if data[i].to_int() >> 2 == 0x12 && (data[i + 3].to_int() & 3) == 1 {
+      let src = ((data[i].to_int() & 3).reinterpret_as_uint() << 24) |
+        (data[i + 1].to_int().reinterpret_as_uint() << 16) |
+        (data[i + 2].to_int().reinterpret_as_uint() << 8) |
+        (data[i + 3].to_int().reinterpret_as_uint() & 0xFFFFFFFCU)
+      let base = start_offset + i.reinterpret_as_uint()
+      let dest = if encode { base + src } else { src - base }
+      let tail = data[i + 3].to_int() & 3
+      data[i] = byte_of(0x48U | ((dest >> 24) & 3U))
+      data[i + 1] = byte_of(dest >> 16)
+      data[i + 2] = byte_of(dest >> 8)
+      data[i + 3] = byte_of(tail.reinterpret_as_uint() | (dest & 0xFFU))
+    }
+    i = i + 4
+  }
+  Bytes::from_array(data[:])
+}

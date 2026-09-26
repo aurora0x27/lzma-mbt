@@ -188,3 +188,30 @@ test "bcj_armthumb_transform" {
     b"\x00\xF0\x02\xF8\x01",
   )
 }
+
+///|
+test "bcj_powerpc_roundtrip" {
+  let src = b"\x48\x00\x00\x01\x4B\xFF\xFF\x01\x4C\x11\x22\x01\x48\x11\x22\x00"
+  let e = bcj_powerpc(src[:], 0U, true)
+  let d = bcj_powerpc(e[:], 0U, false)
+  assert_eq(d, src)
+}
+
+///|
+test "bcj_powerpc_transform" {
+  // A branch word `48 00 00 01` (field 0) at offset 0 is unchanged.
+  assert_eq(bcj_powerpc(b"\x48\x00\x00\x01"[:], 0U, true), b"\x48\x00\x00\x01")
+  // At a 4096-byte start offset the field gains 0x1000.
+  assert_eq(
+    bcj_powerpc(b"\x48\x00\x00\x01"[:], 4096U, true),
+    b"\x48\x00\x10\x01",
+  )
+  assert_eq(
+    bcj_powerpc(b"\x48\x00\x10\x01"[:], 4096U, false),
+    b"\x48\x00\x00\x01",
+  )
+  // Near-miss words are untouched; fewer than 4 bytes is untouched.
+  assert_eq(bcj_powerpc(b"\x48\x11\x22\x00"[:], 0U, true), b"\x48\x11\x22\x00")
+  assert_eq(bcj_powerpc(b"\x4C\x11\x22\x01"[:], 0U, true), b"\x4C\x11\x22\x01")
+  assert_eq(bcj_powerpc(b"\x48\x00\x00"[:], 0U, true), b"\x48\x00\x00")
+}
