@@ -12,6 +12,8 @@ pub fn bcj_arm64(BytesView, UInt, Bool) -> Bytes
 
 pub fn bcj_armthumb(BytesView, UInt, Bool) -> Bytes
 
+pub fn bcj_ia64(BytesView, UInt, Bool) -> Bytes
+
 pub fn bcj_powerpc(BytesView, UInt, Bool) -> Bytes
 
 pub fn bcj_x86(BytesView, UInt, Bool) -> Bytes

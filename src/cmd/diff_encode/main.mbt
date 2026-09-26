@@ -122,6 +122,13 @@ fn powerpc_payload() -> Bytes {
 }
 
 ///|
+/// Deterministic IA-64-laden payload (bundles exercising all three branch
+/// slots plus a trailing partial bundle).
+fn ia64_payload() -> Bytes {
+  b"\x16\x00\x00\x00\x00\x14\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x12\x00\x00\x00\x00\x00\x00\x28\x1A\x01\x28\x00\x00\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xC0\x8A\x06\x50\x16\x00\x70\xDA\x00\x16\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x12\x00\x00\x00\x00\x00\x00\xA0\x68\x04\x28\x00\x00\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xE0\x5A\x10\x58\x16\x00\xE0\xB4\x01\x14\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x12\x00\x00\x00\x00\x00\x00\x18\xB7\x07\x2C\x00\x00\x00\x00\x00\x16\x01\x02"
+}
+
+///|
 fn format_name(f : @lzma.Format) -> String {
   match f {
     Auto => "auto"
@@ -252,6 +259,7 @@ fn emit_xz_bcj_case(
     bcj_arm64=bcj == "arm64",
     bcj_armthumb=bcj == "armthumb",
     bcj_powerpc=bcj == "powerpc",
+    bcj_ia64=bcj == "ia64",
   ) catch {
     @coder.Data => {
       println("ERROR DataError")
@@ -392,6 +400,13 @@ fn main {
       6,
       @lzma.Check::Crc64,
       "powerpc",
+    )
+    emit_xz_bcj_case(
+      "short_xz_ia64_p6_crc64",
+      ia64_payload(),
+      6,
+      @lzma.Check::Crc64,
+      "ia64",
     )
     emit_case(
       "empty_xz_p6_crc32",

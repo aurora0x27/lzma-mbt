@@ -358,3 +358,88 @@ pub fn bcj_powerpc(
   }
   Bytes::from_array(data[:])
 }
+
+///|
+fn u32_from_u64(v : UInt64) -> UInt {
+  (v & 0xFFFFFFFFUL).to_uint()
+}
+
+///|
+fn u64_from_u32(v : UInt) -> UInt64 {
+  v.to_uint64()
+}
+
+///|
+/// `BRANCH_TABLE` from liblzma `simple/ia64.c`, indexed by the 5-bit bundle
+/// template.
+fn ia64_branch_mask(template : Int) -> UInt {
+  match template {
+    16 | 17 | 24 | 25 | 28 | 29 => 4U
+    18 | 19 => 6U
+    22 | 23 => 7U
+    _ => 0U
+  }
+}
+
+///|
+/// IA-64 (Itanium) BCJ filter matching liblzma `simple/ia64.c`: in each
+/// 16-byte bundle, the slots selected by the bundle template may hold a `brl`
+/// instruction; its 21-bit offset field is adjusted by `start_offset + i`
+/// (`i` being the bundle position), in units of 16 bytes. Processing is
+/// 16-byte aligned from `start_offset`; trailing bytes pass through.
+pub fn bcj_ia64(input : BytesView, start_offset : UInt, encode : Bool) -> Bytes {
+  let data = Array(capacity=input.length())
+  for b in input {
+    data.push(b)
+  }
+  let n = data.length()
+  let size = n / 16 * 16
+  let mut i = 0
+  while i < size {
+    let mask = ia64_branch_mask(data[i].to_int() & 0x1F)
+    let mut bit_pos = 5
+    let mut slot = 0
+    while slot < 3 {
+      if ((mask >> slot) & 1U) != 0U {
+        let byte_pos = bit_pos >> 3
+        let bit_res = bit_pos & 7
+        let mut instruction = 0UL
+        let mut j = 0
+        while j < 6 {
+          instruction = instruction |
+            (
+              u64_from_u32(
+                data[i + j + byte_pos].to_int().reinterpret_as_uint(),
+              ) <<
+              (8 * j)
+            )
+          j = j + 1
+        }
+        let mut inst_norm = instruction >> bit_res
+        if ((inst_norm >> 37) & 0xFUL) == 0x5UL &&
+          ((inst_norm >> 9) & 0x7UL) == 0UL {
+          let mut src = (inst_norm >> 13) & 0xFFFFFUL
+          src = src | (((inst_norm >> 36) & 1UL) << 20)
+          let src32 = u32_from_u64(src) << 4
+          let base = start_offset + i.reinterpret_as_uint()
+          let dest = (if encode { base + src32 } else { src32 - base }) >> 4
+          let clear_mask = (0x8FFFFFUL << 13) ^ 0xFFFFFFFFFFFFFFFFUL
+          inst_norm = inst_norm & clear_mask
+          inst_norm = inst_norm | (u64_from_u32(dest & 0xFFFFFU) << 13)
+          inst_norm = inst_norm | (u64_from_u32(dest & 0x100000U) << 16)
+          let keep = (1UL << bit_res) - 1UL
+          let instr2 = (instruction & keep) | (inst_norm << bit_res)
+          let mut k = 0
+          while k < 6 {
+            data[i + k + byte_pos] = byte_of(u32_from_u64(instr2 >> (8 * k)))
+            k = k + 1
+          }
+        }
+      }
+      slot = slot + 1
+      bit_pos = bit_pos + 41
+    }
+    i = i + 16
+  }
+  Bytes::from_array(data[:])
+}

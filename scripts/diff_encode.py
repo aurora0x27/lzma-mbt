@@ -36,6 +36,7 @@ REQUIRED_CASES = {
     "short_xz_arm64_p6_crc64",
     "short_xz_armthumb_p6_crc64",
     "short_xz_powerpc_p6_crc64",
+    "short_xz_ia64_p6_crc64",
     "run64_xz_p6_crc64",
     "run64_lzma_p6",
     "run64_lzma2_p6",
