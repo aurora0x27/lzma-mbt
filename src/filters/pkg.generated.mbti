@@ -16,6 +16,8 @@ pub fn bcj_ia64(BytesView, UInt, Bool) -> Bytes
 
 pub fn bcj_powerpc(BytesView, UInt, Bool) -> Bytes
 
+pub fn bcj_sparc(BytesView, UInt, Bool) -> Bytes
+
 pub fn bcj_x86(BytesView, UInt, Bool) -> Bytes
 
 pub fn delta_decode(BytesView, Int) -> Bytes raise FilterError

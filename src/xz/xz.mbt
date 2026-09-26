@@ -124,6 +124,7 @@ priv struct BlockFilters {
   armthumb : Bool
   powerpc : Bool
   ia64 : Bool
+  sparc : Bool
 }
 
 ///|
@@ -149,6 +150,7 @@ fn parse_block_filters(
   let mut armthumb = false
   let mut powerpc = false
   let mut ia64 = false
+  let mut sparc = false
   let mut dict_size = 0U
   let mut i = 0
   while i < nfilters {
@@ -168,6 +170,7 @@ fn parse_block_filters(
         fid == 0x06UL ||
         fid == 0x07UL ||
         fid == 0x08UL ||
+        fid == 0x09UL ||
         fid == 0x0AUL {
         raise @coder.Data
       }
@@ -187,6 +190,7 @@ fn parse_block_filters(
         fid != 0x06UL &&
         fid != 0x07UL &&
         fid != 0x08UL &&
+        fid != 0x09UL &&
         fid != 0x0AUL {
         raise @coder.Unsupported
       }
@@ -209,14 +213,26 @@ fn parse_block_filters(
           armthumb = true
         } else if fid == 0x05UL {
           powerpc = true
-        } else {
+        } else if fid == 0x06UL {
           ia64 = true
+        } else {
+          sparc = true
         }
       }
     }
     i = i + 1
   }
-  { dict_size, delta_distance, x86, arm, arm64, armthumb, powerpc, ia64, }
+  {
+    dict_size,
+    delta_distance,
+    x86,
+    arm,
+    arm64,
+    armthumb,
+    powerpc,
+    ia64,
+    sparc,
+  }
 }
 
 ///|
@@ -420,6 +436,8 @@ fn decode_one_block(
     @filters.bcj_powerpc(filtered[:], 0U, false)
   } else if filters.ia64 {
     @filters.bcj_ia64(filtered[:], 0U, false)
+  } else if filters.sparc {
+    @filters.bcj_sparc(filtered[:], 0U, false)
   } else {
     filtered
   }
@@ -794,7 +812,8 @@ pub fn StreamDecoder::feed(
         header.filters.arm64 ||
         header.filters.armthumb ||
         header.filters.powerpc ||
-        header.filters.ia64
+        header.filters.ia64 ||
+        header.filters.sparc
     }
     if whole {
       let (plain, unpadded, used) = decode_one_block(
@@ -868,6 +887,7 @@ pub fn encode_xz(
   bcj_armthumb? : Bool = false,
   bcj_powerpc? : Bool = false,
   bcj_ia64? : Bool = false,
+  bcj_sparc? : Bool = false,
 ) -> Bytes raise @coder.CoderError {
   // A single Block is enough for a well-formed stream; multi-Block splitting
   // is not required for decoder compatibility (see docs/research/xz.md).
@@ -881,7 +901,8 @@ pub fn encode_xz(
     (if bcj_arm64 { 1 } else { 0 }) +
     (if bcj_armthumb { 1 } else { 0 }) +
     (if bcj_powerpc { 1 } else { 0 }) +
-    (if bcj_ia64 { 1 } else { 0 })
+    (if bcj_ia64 { 1 } else { 0 }) +
+    (if bcj_sparc { 1 } else { 0 })
   if npre > 1 {
     raise @coder.Data
   }
@@ -897,6 +918,8 @@ pub fn encode_xz(
     @filters.bcj_powerpc(input, 0U, true)
   } else if bcj_ia64 {
     @filters.bcj_ia64(input, 0U, true)
+  } else if bcj_sparc {
+    @filters.bcj_sparc(input, 0U, true)
   } else if delta_distance != 0 {
     @filters.delta_encode(input, delta_distance) catch {
       _ => raise @coder.Data
@@ -938,6 +961,10 @@ pub fn encode_xz(
   } else if bcj_ia64 {
     // IA-64 BCJ: filter ID 0x06, empty filter properties (size 0).
     content.write_u8(b'\x06')
+    content.write_u8(b'\x00')
+  } else if bcj_sparc {
+    // SPARC BCJ: filter ID 0x09, empty filter properties (size 0).
+    content.write_u8(b'\x09')
     content.write_u8(b'\x00')
   } else if delta_distance != 0 {
     content.write_u8(b'\x03')

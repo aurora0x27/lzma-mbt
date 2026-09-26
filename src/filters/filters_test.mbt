@@ -239,3 +239,32 @@ test "bcj_ia64_matches_liblzma" {
   assert_eq(bcj_ia64(b0[:], 0U, true), b0)
   assert_eq(bcj_ia64(b"\x16\x01\x02"[:], 0U, true), b"\x16\x01\x02")
 }
+
+///|
+test "bcj_sparc_roundtrip" {
+  let src = b"\x40\x00\x00\x08\x7F\xC0\x11\x22\x40\xC0\x11\x22\x7F\x00\x33\x44"
+  let e = bcj_sparc(src[:], 0U, true)
+  let d = bcj_sparc(e[:], 0U, false)
+  assert_eq(d, src)
+}
+
+///|
+test "bcj_sparc_transform" {
+  // A call word `40 00 00 00` at offset 0 is unchanged.
+  assert_eq(bcj_sparc(b"\x40\x00\x00\x00"[:], 0U, true), b"\x40\x00\x00\x00")
+  // At a 4096-byte start offset the 22-bit field gains 0x400.
+  assert_eq(bcj_sparc(b"\x40\x00\x00\x00"[:], 4096U, true), b"\x40\x00\x04\x00")
+  assert_eq(
+    bcj_sparc(b"\x40\x00\x04\x00"[:], 4096U, false),
+    b"\x40\x00\x00\x00",
+  )
+  assert_eq(bcj_sparc(b"\x40\x00\x00\x08"[:], 4096U, true), b"\x40\x00\x04\x08")
+  assert_eq(
+    bcj_sparc(b"\x40\x00\x04\x08"[:], 4096U, false),
+    b"\x40\x00\x00\x08",
+  )
+  // Near-miss words are untouched; fewer than 4 bytes is untouched.
+  assert_eq(bcj_sparc(b"\x40\xC0\x11\x22"[:], 0U, true), b"\x40\xC0\x11\x22")
+  assert_eq(bcj_sparc(b"\x7F\x00\x33\x44"[:], 0U, true), b"\x7F\x00\x33\x44")
+  assert_eq(bcj_sparc(b"\x40\x00\x11"[:], 0U, true), b"\x40\x00\x11")
+}

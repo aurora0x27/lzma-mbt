@@ -443,3 +443,46 @@ pub fn bcj_ia64(input : BytesView, start_offset : UInt, encode : Bool) -> Bytes 
   }
   Bytes::from_array(data[:])
 }
+
+///|
+/// SPARC BCJ filter matching liblzma `simple/sparc.c`: a 4-byte big-endian
+/// `call` word (`b0 == 0x40 && (b1 & 0xC0) == 0x00`, or `b0 == 0x7F &&
+/// (b1 & 0xC0) == 0xC0`) has its 22-bit offset field adjusted by the word
+/// position `start_offset + i`, with bit 21 sign-extended into the high bits.
+/// Processing is four-byte aligned from `start_offset`; trailing bytes pass
+/// through.
+pub fn bcj_sparc(
+  input : BytesView,
+  start_offset : UInt,
+  encode : Bool,
+) -> Bytes {
+  let data = Array(capacity=input.length())
+  for b in input {
+    data.push(b)
+  }
+  let n = data.length()
+  let size = n / 4 * 4
+  let mut i = 0
+  while i < size {
+    let b0 = data[i].to_int()
+    let b1 = data[i + 1].to_int()
+    if (b0 == 0x40 && (b1 & 0xC0) == 0x00) ||
+      (b0 == 0x7F && (b1 & 0xC0) == 0xC0) {
+      let src = (data[i].to_int().reinterpret_as_uint() << 24) |
+        (data[i + 1].to_int().reinterpret_as_uint() << 16) |
+        (data[i + 2].to_int().reinterpret_as_uint() << 8) |
+        data[i + 3].to_int().reinterpret_as_uint()
+      let src2 = src << 2
+      let base = start_offset + i.reinterpret_as_uint()
+      let dest = (if encode { base + src2 } else { src2 - base }) >> 2
+      let sign = 0U - ((dest >> 22) & 1U)
+      let out = ((sign << 22) & 0x3FFFFFFFU) | (dest & 0x3FFFFFU) | 0x40000000U
+      data[i] = byte_of(out >> 24)
+      data[i + 1] = byte_of(out >> 16)
+      data[i + 2] = byte_of(out >> 8)
+      data[i + 3] = byte_of(out)
+    }
+    i = i + 4
+  }
+  Bytes::from_array(data[:])
+}
