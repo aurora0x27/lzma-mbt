@@ -45,11 +45,17 @@ merged 2026-09-01). The repository therefore uses only the non-deprecated
 All must pass on the mandated toolchain:
 
 ```text
+moon update
 moon check --deny-warn
 moon fmt --check
 moon test --deny-warn
 python3 scripts/diff_encode.py
 ```
+
+`moon update` refreshes the package registry index. It is required in CI because
+`moon.work` includes `examples/p1`…`p5`, which depend on `moonbitlang/x` from
+the registry; a fresh runner cannot resolve that import until the index is
+updated. Locally, skip `moon update` if `.mooncakes/` is already populated.
 
 ## History
 
