@@ -1,14 +1,15 @@
 ///|
-/// Hash-chain match finder (HC3-style). Lookback stays capped at
-/// `MatchLookback`; candidate walks are capped at `MatchChainDepth`.
-/// Replaces the previous O(window) linear scan in `find_new_match`.
-pub const MatchLookback : Int = 4096
-
-///|
-const MatchChainDepth : Int = 64
+/// Hash-chain match finder (HC3-style). Search distance is capped by the
+/// caller at `min(window, dict_size)`. Candidate walks are capped at
+/// `MatchChainDepth` so encode stays O(n · depth), not O(n · dict).
+const MatchChainDepth : Int = 256
 
 ///|
 const MatchHashSize : Int = 65536
+
+///|
+/// Soft hint for initial chain capacity / seed window when dict is huge.
+const MatchSeedCap : Int = 65536
 
 ///|
 fn hash3(b0 : Byte, b1 : Byte, b2 : Byte) -> Int {
@@ -29,7 +30,7 @@ priv struct MatchFinder {
 fn MatchFinder::new(base : Int) -> MatchFinder {
   {
     hash: Array::make(MatchHashSize, -1),
-    chain: Array(capacity=MatchLookback + 1024),
+    chain: Array(capacity=MatchSeedCap + 1024),
     base,
   }
 }
@@ -85,23 +86,23 @@ fn MatchFinder::seed(
 }
 
 ///|
-/// Longest new match at `pos` with distance in `1..=max_dist` (LZMA distance
-/// coding uses `dist0 = distance - 1` elsewhere). `window` is the filled
-/// dictionary size (`LzmaEnc.pos`).
+/// Longest new match at `pos` with distance in `1..=max_dist`.
+/// `window` is the filled dictionary size (`LzmaEnc.pos`).
 fn MatchFinder::find(
   self : MatchFinder,
   input : BytesView,
   pos : Int,
   window : Int,
   avail : Int,
+  max_dist : Int,
 ) -> (Int, UInt)? {
-  if avail < 2 || window < 1 {
+  if avail < 2 || window < 1 || max_dist < 1 {
     return None
   }
-  let max_dist = min_int(window, MatchLookback)
+  let dist_cap = min_int(window, max_dist)
   let max_len = min_int(273, avail)
   if pos + 2 >= input.length() {
-    return find_new_match_linear(input, pos, max_dist, window, avail)
+    return find_new_match_linear(input, pos, dist_cap, window, avail)
   }
   let h = hash3(input[pos], input[pos + 1], input[pos + 2])
   let mut cur = self.hash[h]
@@ -113,7 +114,7 @@ fn MatchFinder::find(
     if dist < 1 {
       break
     }
-    if dist > max_dist {
+    if dist > dist_cap {
       break
     }
     let len = match_len_at(input, pos, dist - 1, max_len, window)

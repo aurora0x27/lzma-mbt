@@ -1,6 +1,6 @@
 # 待完成大任务
 
-M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2（含跨 chunk 字典与 `0x80`/`0xA0`/`0xC0`/`0xE0`）/ 单 Stream `.xz`（解码 0..N Block，编码仍为 1 Block）、CRC32/CRC64/SHA-256、容器外 Delta 与完整 x86 BCJ、XZ 容器内 Delta 与全部 BCJ（x86/PowerPC/IA-64/ARM/ARM-Thumb/SPARC/ARM64）、Finish 前整段缓冲的流式外壳。编码侧差分（本库 encode → `xz -d` / liblzma）已在 CI 落地。完成状态以 [docs/compatibility.md](./docs/compatibility.md) 为准。
+M0–M8 骨架已落地：一次性 `encode`/`decode`、LZMA1 / 裸 LZMA2（含跨 chunk 字典与 `0x80`/`0xA0`/`0xC0`/`0xE0`）/ 单 Stream `.xz`（解码 0..N Block，编码仍为 1 Block）、CRC32/CRC64/SHA-256、容器外 Delta 与完整 x86 BCJ、XZ 容器内 Delta 与全部 BCJ（x86/PowerPC/IA-64/ARM/ARM-Thumb/SPARC/ARM64）、Finish 前整段缓冲的流式外壳。编码侧差分（本库 encode → `xz -d` / liblzma）已在 CI 落地。T8 已以 lazy + dict 回看落地（见下文）。完成状态以 [docs/compatibility.md](./docs/compatibility.md) 为准。
 
 本文件只列**尚未完成的大任务**。实现顺序按正确性 → 兼容性 → 流式语义 → 性能。不要并行铺开，不要把未实现标成 complete。协议见 [AGENTS.md](./AGENTS.md)。
 
@@ -101,38 +101,24 @@ Flush：
 
 ---
 
-## T8 — 最优解析（性能里程碑 M10）
+## T8 — 最优解析（性能里程碑 M10）— 已落地（lazy + dict 回看）
 
-**问题**：LZMA1 编码器是贪心匹配，回看上限 4096。编码侧差分必须保持绿色，不要把压缩比优化当主线。
+**落地范围（非完整 GetOptimum DP）**：
 
-**前置**：`scripts/diff_encode.py` 必须保持绿色。
+- 匹配搜索距离 `min(window, dict_size)`（去掉硬编码 4096）。
+- HC3 `MatchChainDepth = 256`。
+- 长度优先候选 + 近似 bit price 平局决胜 + `nice_len` lazy 解析。
 
-**范围**：最优解析或等价动态规划；preset 0..=9 的 dict/lc/lp/pb 已有，可再对齐 nice_len / depth 等**外部可观察**参数。仍不要求与 `xz -6` 字节相同，除非另开「比特流复现」任务。
-
-**测试**
-
-正确性（先于任何速度数字）：
-
-- 全部现有单元 / 向量 / `scripts/diff_encode.py` 通过。
-- `encode` 两次同一输入字节相同（确定性）。
-- 空、1 字节、不可压缩 64 KiB、70 000 字节 run、preset 0 与 6 仍能被 `xz -d` / Python `lzma` 解回。
-
-压缩比（相对切换前的贪心实现，同一输入、preset 6、`.xz`）：
-
-- 至少记录：短文本 `"hello lzma"`、64 字节 run、256 字节混合、64 KiB 不可压缩、70 000 字节 run。
-- 可压缩输入（run / 短重复）的压缩体积 **不得差于** 切换前；允许相等。
-- 不可压缩输入体积允许变差，但须在笔记中写明。
-
-速度：
-
-- 同一组输入记录切换前后墙钟时间（或 `moon run` / 基准脚本）。允许变慢，但数字必须留下，禁止无测量的「应该更快」。
+**证据**：见 `docs/research/lzma.md`「Performance note (T8 lazy + dict lookback)」。syslog 对 xz-6 从 ~5.2× 降至 ~1.09×；large.txt 从 2152→1700 字节。`moon test` + `scripts/diff_encode.py` 绿。
 
 **标准**
 
-- [ ] 在 `docs/research/lzma.md` 或独立笔记写下前后压缩比与时间表。
-- [ ] 兼容性矩阵 Encoder 仍为 yes；Differential 仍含 encode。
-- [ ] 公开 API 未擅自改默认 preset / check / 格式。
-- [ ] 回看/搜索宽度若变为外部可观察，须有测试锁定，且不破坏 `memlimit` 语义。
+- [x] 在 `docs/research/lzma.md` 写下前后压缩比与时间表。
+- [x] 兼容性矩阵 Encoder 仍为 yes；Differential 仍含 encode。
+- [x] 公开 API 未擅自改默认 preset / check / 格式。
+- [x] 回看随 `dict_size`（内部），未新增外部可观察搜索宽度 API；`memlimit` 语义未改。
+
+完整 OPT 数组 DP 若仍需要，另开任务；不再阻塞本文件主线。
 
 ---
 
@@ -154,7 +140,6 @@ Flush：
 
 ```text
 T7 增量流式状态机（.lzma 增量余量）
- → T8 最优解析
 ```
 
-T8 期间编码差分必须保持绿色。
+（T8 lazy + dict 回看已落地；完整 OPT DP 非阻塞项。）

@@ -2,7 +2,7 @@
 
 ## Scope
 
-LZMA1 range-coded literals, matches, repeats, and the LZMA_Alone (`.lzma`) 13-byte header. Encoder is greedy (not optimal parser). Decoder must accept streams from this encoder and, when vectors exist, from `liblzma`.
+LZMA1 range-coded literals, matches, repeats, and the LZMA_Alone (`.lzma`) 13-byte header. Encoder uses HC3 match finding with **length-primary selection**, **lazy matching**, and search distance up to `dict_size` (not a full GetOptimum DP). Decoder must accept streams from this encoder and, when vectors exist, from `liblzma`.
 
 ## Specification
 
@@ -24,11 +24,16 @@ Probability tables (`is_match`, `is_rep*`, length, pos slot, align, literals), f
 
 Per symbol: decode `is_match[state][pos_state]`. Literal vs match/rep. Length/distance as in LZMA SDK. Copy from dictionary.
 
-Encoder: at each position prefer a repeat of length ≥ 2, else a new match ≥ 2 from a **hash-chain (HC3-style) match finder**, else a literal. Lookback remains capped at 4096 even if `dict_size` is larger; chain walk depth is capped at 64. The previous implementation scanned every distance in `1..=4096` (O(n·lookback)); the hash chain only probes recent positions that share the same 3-byte prefix. Always emit an end marker. One-shot encode writes the real unpacked size. LZMA2 reuses the same session across chunks: match length is capped at the remaining bytes of the current chunk so a match cannot cross a chunk boundary.
+Encoder (`LzmaEnc::encode_chunk`):
 
-## Performance note (match finder)
+1. HC3 hash-chain match finder; `max_dist = min(window, dict_size)`; chain walk depth capped at 256.
+2. At each position, score short-rep / rep0..3 / new-match candidates. Prefer **longer** matches; use approximate bit prices (from current `Probs`) only to break equal-length ties (reps before new match).
+3. **Lazy matching**: if the best match length is below `nice_len` (mapped from `dict_size`, preset-6 → 64), peek at `pos+1`. If a longer match appears there (or equal length with lower `literal + next` price), emit a literal and defer.
+4. Always emit an end marker. One-shot encode writes the real unpacked size. LZMA2 reuses the same session across chunks: match length is capped at the remaining bytes of the current chunk so a match cannot cross a chunk boundary.
 
-Measured on macOS with `moon run examples/p6` (wasm-gc), preset-6 defaults, before → after switching to HC3:
+## Performance note (match finder HC3)
+
+Measured on macOS with `moon run examples/p6` (wasm-gc), preset-6 defaults, before → after switching to HC3 (lookback still 4096 at that time):
 
 | Input | Before (s) | After (s) | Size ratio after |
 | --- | ---: | ---: | ---: |
@@ -37,7 +42,16 @@ Measured on macOS with `moon run examples/p6` (wasm-gc), preset-6 defaults, befo
 | River.png (2.6 MiB) | 186 | 1.94 | 0.993 |
 | CuteCat.png (4.9 MiB) | 360 | 3.64 | 1.000 |
 
-Round-trip `cmp` identical for all four; `scripts/diff_encode.py` (35 cases) green. Encoder bytes are still not required to match `xz -6`.
+## Performance note (T8 lazy + dict lookback)
+
+Measured on macOS with `make example-p2` / `example-p3` (wasm-gc), preset-6 `.xz`, before → after T8:
+
+| Input | Before (bytes) | After (bytes) | xz-6 (bytes) | After/xz-6 | Wall before (s) | Wall after (s) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| large.txt (~512 KiB) | 2152 | 1700 | 1580 | 1.08 | 0.25 | 0.24 |
+| syslog.log (~248 KiB) | 29456 | 6112 | 5620 | 1.09 | 0.17 | 0.21 |
+
+`moon test --deny-warn` (334) and `scripts/diff_encode.py` (35 cases) green. Encoder bytes are still not required to match `xz -6`. Full GetOptimum-style DP remains optional future work.
 
 ## Invariants
 
@@ -59,8 +73,8 @@ Empty, `"a"`, `"hello lzma"`, 64-byte run, 256 mixed bytes — produced by this 
 
 ## Compatibility notes
 
-Greedy encoding will not match `xz -6` bytes. Decoder alignment with `liblzma` is required when reference streams are available. Encoder output is checked by a reference decoder in CI (`scripts/diff_encode.py`).
+Lazy / length-primary encoding will not match `xz -6` bytes. Decoder alignment with `liblzma` is required when reference streams are available. Encoder output is checked by a reference decoder in CI (`scripts/diff_encode.py`).
 
 ## Open questions
 
-Optimal parsing remains deferred (performance milestone M10 / T8). Further match-finder tuning (HC4, binary tree, larger chain depth) is optional once T8 is scheduled.
+Full OPT-buffer dynamic programming (liblzma `GetOptimum`) is optional if further ratio is needed. HC4 / binary-tree match finders are optional speed/ratio tuning.

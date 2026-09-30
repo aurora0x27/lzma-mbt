@@ -92,6 +92,271 @@ pub fn LzmaEnc::skip_uncompressed(self : LzmaEnc, n : Int) -> Unit {
 }
 
 ///|
+/// Candidate: kind 0=none, 1=short-rep, 2=rep0, 3=rep1, 4=rep2, 5=rep3, 6=new.
+priv struct EncChoice {
+  kind : Int
+  len : Int
+  dist : UInt
+  price : Int
+}
+
+///|
+fn no_choice() -> EncChoice {
+  { kind: 0, len: 1, dist: 0U, price: 0x7FFFFFFF }
+}
+
+///|
+fn LzmaEnc::price_short_rep(self : LzmaEnc, ps : Int) -> Int {
+  bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
+    bit_price(self.probs.is_rep[self.state], 1) +
+    bit_price(self.probs.is_rep_g0[self.state], 0) +
+    bit_price(self.probs.is_rep0_long[self.state * 16 + ps], 0)
+}
+
+///|
+fn LzmaEnc::price_rep0(
+  self : LzmaEnc,
+  ps : Int,
+  len : Int,
+) -> Int {
+  bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
+    bit_price(self.probs.is_rep[self.state], 1) +
+    bit_price(self.probs.is_rep_g0[self.state], 0) +
+    bit_price(self.probs.is_rep0_long[self.state * 16 + ps], 1) +
+    length_price(
+      self.probs.rep_len_choice,
+      self.probs.rep_len_low,
+      self.probs.rep_len_mid,
+      self.probs.rep_len_high,
+      ps,
+      len,
+    )
+}
+
+///|
+fn LzmaEnc::price_rep1(self : LzmaEnc, ps : Int, len : Int) -> Int {
+  bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
+    bit_price(self.probs.is_rep[self.state], 1) +
+    bit_price(self.probs.is_rep_g0[self.state], 1) +
+    bit_price(self.probs.is_rep_g1[self.state], 0) +
+    length_price(
+      self.probs.rep_len_choice,
+      self.probs.rep_len_low,
+      self.probs.rep_len_mid,
+      self.probs.rep_len_high,
+      ps,
+      len,
+    )
+}
+
+///|
+fn LzmaEnc::price_rep2(self : LzmaEnc, ps : Int, len : Int) -> Int {
+  bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
+    bit_price(self.probs.is_rep[self.state], 1) +
+    bit_price(self.probs.is_rep_g0[self.state], 1) +
+    bit_price(self.probs.is_rep_g1[self.state], 1) +
+    bit_price(self.probs.is_rep_g2[self.state], 0) +
+    length_price(
+      self.probs.rep_len_choice,
+      self.probs.rep_len_low,
+      self.probs.rep_len_mid,
+      self.probs.rep_len_high,
+      ps,
+      len,
+    )
+}
+
+///|
+fn LzmaEnc::price_rep3(self : LzmaEnc, ps : Int, len : Int) -> Int {
+  bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
+    bit_price(self.probs.is_rep[self.state], 1) +
+    bit_price(self.probs.is_rep_g0[self.state], 1) +
+    bit_price(self.probs.is_rep_g1[self.state], 1) +
+    bit_price(self.probs.is_rep_g2[self.state], 1) +
+    length_price(
+      self.probs.rep_len_choice,
+      self.probs.rep_len_low,
+      self.probs.rep_len_mid,
+      self.probs.rep_len_high,
+      ps,
+      len,
+    )
+}
+
+///|
+fn LzmaEnc::price_new_match(
+  self : LzmaEnc,
+  ps : Int,
+  len : Int,
+  dist : UInt,
+) -> Int {
+  bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
+    bit_price(self.probs.is_rep[self.state], 0) +
+    length_price(
+      self.probs.len_choice,
+      self.probs.len_low,
+      self.probs.len_mid,
+      self.probs.len_high,
+      ps,
+      len,
+    ) +
+    distance_price(self.probs, len, dist)
+}
+
+///|
+fn consider(cur : EncChoice, kind : Int, len : Int, dist : UInt, price : Int) -> EncChoice {
+  // Prefer longer matches (greedy length); use price only to break ties,
+  // then lower kind (reps before new match).
+  if cur.kind == 0 {
+    return { kind, len, dist, price }
+  }
+  if len > cur.len ||
+    (len == cur.len &&
+    (price < cur.price || (price == cur.price && kind < cur.kind))) {
+    { kind, len, dist, price }
+  } else {
+    cur
+  }
+}
+
+///|
+fn LzmaEnc::find_best_at(
+  self : LzmaEnc,
+  input : BytesView,
+  abs : Int,
+  avail : Int,
+  mf : MatchFinder,
+  /// Filled dictionary size at this absolute position.
+  window : Int,
+) -> EncChoice {
+  let ps = pos_state(window, self.pb)
+  let mut best = no_choice()
+  if avail < 2 || window <= 0 {
+    return best
+  }
+  let max_len = min_int(273, avail)
+  let max_dist = min_int(window, self.dict_size)
+
+  let l0 = match_len_at(input, abs, uint_as_int(self.r0), max_len, window)
+  if l0 == 1 {
+    best = consider(best, 1, 1, self.r0, self.price_short_rep(ps))
+  }
+  if l0 >= 2 {
+    best = consider(best, 2, l0, self.r0, self.price_rep0(ps, l0))
+  }
+  let l1 = match_len_at(input, abs, uint_as_int(self.r1), max_len, window)
+  if l1 >= 2 {
+    best = consider(best, 3, l1, self.r1, self.price_rep1(ps, l1))
+  }
+  let l2 = match_len_at(input, abs, uint_as_int(self.r2), max_len, window)
+  if l2 >= 2 {
+    best = consider(best, 4, l2, self.r2, self.price_rep2(ps, l2))
+  }
+  let l3 = match_len_at(input, abs, uint_as_int(self.r3), max_len, window)
+  if l3 >= 2 {
+    best = consider(best, 5, l3, self.r3, self.price_rep3(ps, l3))
+  }
+  match mf.find(input, abs, window, avail, max_dist) {
+    Some((nl, nd)) =>
+      if nl >= 2 {
+        best = consider(best, 6, nl, nd, self.price_new_match(ps, nl, nd))
+      }
+    None => ()
+  }
+  best
+}
+
+///|
+fn LzmaEnc::emit_choice(
+  self : LzmaEnc,
+  enc : @rc.RangeEncoder,
+  choice : EncChoice,
+  input : BytesView,
+  abs : Int,
+) -> Int {
+  let ps = pos_state(self.pos, self.pb)
+  if choice.kind == 1 {
+    enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 1)
+    enc.encode_bit(self.probs.is_rep, self.state, 1)
+    enc.encode_bit(self.probs.is_rep_g0, self.state, 0)
+    enc.encode_bit(self.probs.is_rep0_long, self.state * 16 + ps, 0)
+    self.state = state_short_rep(self.state)
+    return 1
+  }
+  if choice.kind >= 2 && choice.len >= 2 {
+    enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 1)
+    if choice.kind == 6 {
+      enc.encode_bit(self.probs.is_rep, self.state, 0)
+      self.r3 = self.r2
+      self.r2 = self.r1
+      self.r1 = self.r0
+      self.r0 = choice.dist
+      encode_length(
+        enc,
+        self.probs.len_choice,
+        self.probs.len_low,
+        self.probs.len_mid,
+        self.probs.len_high,
+        ps,
+        choice.len,
+      )
+      encode_distance(enc, self.probs, choice.len, choice.dist)
+      self.state = state_match(self.state)
+    } else {
+      enc.encode_bit(self.probs.is_rep, self.state, 1)
+      if choice.kind == 2 {
+        enc.encode_bit(self.probs.is_rep_g0, self.state, 0)
+        enc.encode_bit(self.probs.is_rep0_long, self.state * 16 + ps, 1)
+      } else {
+        enc.encode_bit(self.probs.is_rep_g0, self.state, 1)
+        if choice.kind == 3 {
+          enc.encode_bit(self.probs.is_rep_g1, self.state, 0)
+        } else if choice.kind == 4 {
+          enc.encode_bit(self.probs.is_rep_g1, self.state, 1)
+          enc.encode_bit(self.probs.is_rep_g2, self.state, 0)
+          self.r2 = self.r1
+        } else {
+          enc.encode_bit(self.probs.is_rep_g1, self.state, 1)
+          enc.encode_bit(self.probs.is_rep_g2, self.state, 1)
+          self.r3 = self.r2
+          self.r2 = self.r1
+        }
+        self.r1 = self.r0
+        self.r0 = choice.dist
+      }
+      encode_length(
+        enc,
+        self.probs.rep_len_choice,
+        self.probs.rep_len_low,
+        self.probs.rep_len_mid,
+        self.probs.rep_len_high,
+        ps,
+        choice.len,
+      )
+      self.state = state_rep(self.state)
+    }
+    return choice.len
+  }
+  // Literal
+  enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 0)
+  let prev = if self.pos == 0 { b'\x00' } else { input[abs - 1] }
+  let match_b = if self.state < 7 || self.pos == 0 {
+    b'\x00'
+  } else {
+    let back = uint_as_int(self.r0)
+    if back < 0 || back >= self.pos {
+      b'\x00'
+    } else {
+      input[abs - 1 - back]
+    }
+  }
+  let base = lit_index(self.pos, prev, self.lc, self.lp) * 0x300
+  encode_literal(enc, self.probs.lit, base, self.state, match_b, input[abs])
+  self.state = state_lit(self.state)
+  1
+}
+
+///|
 pub fn LzmaEnc::encode_chunk(
   self : LzmaEnc,
   input : BytesView,
@@ -101,143 +366,66 @@ pub fn LzmaEnc::encode_chunk(
 ) -> Bytes {
   let enc = @rc.RangeEncoder::new()
   let to = from + n
-  // Only the last MATCH_LOOKBACK bytes can be referenced; seed that window.
-  let seed_from = if from > MatchLookback { from - MatchLookback } else { 0 }
+  let seed_back = min_int(self.dict_size, MatchSeedCap)
+  let seed_from = if from > seed_back { from - seed_back } else { 0 }
   let mf = MatchFinder::new(seed_from)
   mf.seed(input, seed_from, from)
+  let nice = nice_len_for_dict(self.dict_size)
   let mut abs = from
   while abs < to {
-    let ps = pos_state(self.pos, self.pb)
-    let prev = if self.pos == 0 { b'\x00' } else { input[abs - 1] }
     let avail = to - abs
-    let mut used_match = false
-    let mut step = 1
-    if avail >= 2 && self.pos > 0 {
-      let max_len = min_int(273, avail)
-      let mut best_kind = 0
-      let mut best_len = 1
-      let mut best_dist = self.r0
-      let l0 = match_len_at(input, abs, uint_as_int(self.r0), max_len, self.pos)
-      if l0 >= 1 {
-        if l0 == 1 {
-          best_kind = 1
-          best_len = 1
-        }
-        if l0 >= 2 {
-          best_kind = 2
-          best_len = l0
-          best_dist = self.r0
-        }
-      }
-      let l1 = match_len_at(input, abs, uint_as_int(self.r1), max_len, self.pos)
-      if l1 > best_len {
-        best_kind = 3
-        best_len = l1
-        best_dist = self.r1
-      }
-      let l2 = match_len_at(input, abs, uint_as_int(self.r2), max_len, self.pos)
-      if l2 > best_len {
-        best_kind = 4
-        best_len = l2
-        best_dist = self.r2
-      }
-      let l3 = match_len_at(input, abs, uint_as_int(self.r3), max_len, self.pos)
-      if l3 > best_len {
-        best_kind = 5
-        best_len = l3
-        best_dist = self.r3
-      }
-      match mf.find(input, abs, self.pos, avail) {
-        Some((nl, nd)) =>
-          if nl > best_len {
-            best_kind = 6
-            best_len = nl
-            best_dist = nd
-          }
-        None => ()
-      }
-      if best_kind == 1 {
-        enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 1)
-        enc.encode_bit(self.probs.is_rep, self.state, 1)
-        enc.encode_bit(self.probs.is_rep_g0, self.state, 0)
-        enc.encode_bit(self.probs.is_rep0_long, self.state * 16 + ps, 0)
-        self.state = state_short_rep(self.state)
-        step = 1
-        used_match = true
-      } else if best_kind >= 2 && best_len >= 2 {
-        enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 1)
-        if best_kind == 6 {
-          enc.encode_bit(self.probs.is_rep, self.state, 0)
-          self.r3 = self.r2
-          self.r2 = self.r1
-          self.r1 = self.r0
-          self.r0 = best_dist
-          encode_length(
-            enc,
-            self.probs.len_choice,
-            self.probs.len_low,
-            self.probs.len_mid,
-            self.probs.len_high,
-            ps,
-            best_len,
-          )
-          encode_distance(enc, self.probs, best_len, best_dist)
-          self.state = state_match(self.state)
-        } else {
-          enc.encode_bit(self.probs.is_rep, self.state, 1)
-          if best_kind == 2 {
-            enc.encode_bit(self.probs.is_rep_g0, self.state, 0)
-            enc.encode_bit(self.probs.is_rep0_long, self.state * 16 + ps, 1)
-          } else {
-            enc.encode_bit(self.probs.is_rep_g0, self.state, 1)
-            if best_kind == 3 {
-              enc.encode_bit(self.probs.is_rep_g1, self.state, 0)
-            } else if best_kind == 4 {
-              enc.encode_bit(self.probs.is_rep_g1, self.state, 1)
-              enc.encode_bit(self.probs.is_rep_g2, self.state, 0)
-              self.r2 = self.r1
-            } else {
-              enc.encode_bit(self.probs.is_rep_g1, self.state, 1)
-              enc.encode_bit(self.probs.is_rep_g2, self.state, 1)
-              self.r3 = self.r2
-              self.r2 = self.r1
-            }
-            self.r1 = self.r0
-            self.r0 = best_dist
-          }
-          encode_length(
-            enc,
-            self.probs.rep_len_choice,
-            self.probs.rep_len_low,
-            self.probs.rep_len_mid,
-            self.probs.rep_len_high,
-            ps,
-            best_len,
-          )
-          self.state = state_rep(self.state)
-        }
-        step = best_len
-        used_match = true
-      }
-    }
-    if used_match == false {
-      enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 0)
-      let match_b = if self.state < 7 || self.pos == 0 {
-        b'\x00'
-      } else {
-        let back = uint_as_int(self.r0)
-        if back < 0 || back >= self.pos {
+    let cur = self.find_best_at(input, abs, avail, mf, self.pos)
+    let mut take = no_choice()
+    if cur.kind != 0 && cur.len >= 2 {
+      if cur.len >= nice {
+        take = cur
+      } else if abs + 1 < to {
+        // Lazy: peek at next position after a hypothetical literal.
+        let prev = if self.pos == 0 { b'\x00' } else { input[abs - 1] }
+        let match_b = if self.state < 7 || self.pos == 0 {
           b'\x00'
         } else {
-          input[abs - 1 - back]
+          let back = uint_as_int(self.r0)
+          if back < 0 || back >= self.pos {
+            b'\x00'
+          } else {
+            input[abs - 1 - back]
+          }
         }
+        let lit_base = lit_index(self.pos, prev, self.lc, self.lp) * 0x300
+        let ps = pos_state(self.pos, self.pb)
+        let lit_p = literal_price(
+          self.probs,
+          self.state,
+          ps,
+          lit_base,
+          match_b,
+          input[abs],
+        )
+        let next = self.find_best_at(
+          input,
+          abs + 1,
+          avail - 1,
+          mf,
+          self.pos + 1,
+        )
+        if next.kind != 0 &&
+          next.len >= 2 &&
+          (next.len > cur.len ||
+          (next.len == cur.len && lit_p + next.price < cur.price)) {
+          take = no_choice() // emit literal this step
+        } else {
+          take = cur
+        }
+      } else {
+        take = cur
       }
-      let base = lit_index(self.pos, prev, self.lc, self.lp) * 0x300
-      encode_literal(enc, self.probs.lit, base, self.state, match_b, input[abs])
-      self.state = state_lit(self.state)
-      step = 1
+    } else if cur.kind == 1 {
+      // Short rep is always cheap enough to take immediately.
+      take = cur
     }
-    // Index every consumed position so later searches can find it.
+
+    let step = self.emit_choice(enc, take, input, abs)
     let mut i = 0
     while i < step {
       mf.insert(input, abs + i)
