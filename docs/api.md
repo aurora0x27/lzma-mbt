@@ -128,9 +128,9 @@ pub(all) enum Check {
 pub(all) enum Action {
   /// 追加输入。解码器在完整流可验证时可以提前产生输出；编码器在 `Finish` 前仍缓冲输入。
   Run
-  /// 本版本不支持，`code` 抛 `InvalidConfiguration`。
+  /// 不支持：`code` 在消费输入/写输出之前抛 `InvalidConfiguration`，绝不按 `Run` 处理。
   SyncFlush
-  /// 本版本不支持，`code` 抛 `InvalidConfiguration`。
+  /// 不支持：`code` 在消费输入/写输出之前抛 `InvalidConfiguration`，绝不按 `Run` 处理。
   FullFlush
   /// 结束输入，运行与一次性 API 相同的 `encode`/`decode`，再向 `output` 排空。
   Finish
@@ -148,7 +148,7 @@ pub(all) enum Status {
 } derive(Debug, Eq)
 ```
 
-`Action`：本版本只支持 `Run` 与 `Finish`。`SyncFlush` / `FullFlush` → `InvalidConfiguration`。
+`Action`：本版本只支持 `Run` 与 `Finish`。`SyncFlush` / `FullFlush` 是**冻结的拒绝语义**：`Encoder::code` / `Decoder::code` 在任何格式下都抛 `InvalidConfiguration`，且发生在消费本次 `input`、写 `output` 或改变 `total_in` / `total_out` 之前；它们不会被当成 `Run` 吞掉，也不会 flush 任何前缀。拒绝后对象状态不变，可继续 `write` / `code(..., Run)` / `finish`。liblzma 的 `LZMA_SYNC_FLUSH` / `LZMA_FULL_FLUSH` 语义留待后续任务（见 `task.md` T7）。
 
 `Status`：`Run` 会根据当前阶段返回 `NeedInput`、`NeedOutput` 或 `StreamEnd`；编码器在 `Finish` 前通常返回 `NeedInput`，解码器在完整流可验证后可以提前返回 `StreamEnd`。`Finish` 之后是 `NeedOutput` 或 `StreamEnd`。页脚后的多余字节、裸 LZMA2 尾部垃圾按 `DataError` 拒绝。
 
@@ -579,6 +579,7 @@ fn decompress_chunks(chunks : Array[Bytes]) -> Bytes raise LzmaError {
 5. 错误按标签匹配；`String` 载荷不是稳定 API。
 6. 单 Stream `.xz` 在 Footer 之后不得有剩余字节，除非 `DecodeOptions.concatenated=true`；裸 LZMA2 在结束标记之后同样不得有剩余字节。
 7. `.xz` 解码器接受 0..N 个 Block；Index 记录必须与各 Block 的 Unpadded Size / Uncompressed Size 逐条一致。编码器当前仍只写 1 个 Block。Block Header 里的 Compressed Size 与 Uncompressed Size（编码器两者都写）必须与 LZMA2 消费字节数 / 最终明文长度一致。VLI 禁止非最短编码。Check 支持 None / CRC32 / CRC64 / SHA-256。Block Header 内过滤器链支持 LZMA2、`Delta -> LZMA2` 与全部 BCJ（`x86`/`PowerPC`/`IA-64`/`ARM`/`ARM-Thumb`/`SPARC`/`ARM64`）-> LZMA2（每条链最多一条前置过滤器）；根包 `EncodeOptions.filters` / `DecodeOptions.filters` 仍表示容器外额外变换。
+8. `Action::SyncFlush` / `Action::FullFlush` 一律 `InvalidConfiguration`；不消费输入、不写输出、不改变计数、不按 `Run` 处理，也不产生可解码前缀。
 
 ---
 

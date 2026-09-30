@@ -522,32 +522,78 @@ test "empty_input_is_eof" {
 
 ///|
 test "sync_flush_is_rejected" {
-  let enc = Encoder::new()
+  let src = b"flush-x"
+  let enc = Encoder::new(options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma,
+  })
   let out = OutputBuf::new(size=16)
   let err = @test.expect_error(() => {
-    enc.code(b"x"[:], out, Action::SyncFlush) |> ignore
+    enc.code(src[:], out, Action::SyncFlush) |> ignore
   })
   assert_true(err is InvalidConfiguration(_))
+  // Rejected before consuming input or writing output; not treated as Run.
+  assert_eq(enc.total_in(), 0UL)
+  assert_eq(enc.total_out(), 0UL)
+  assert_eq(out.written(), b"")
+  enc.write(src[:])
+  let compressed = enc.finish()
+  assert_eq(
+    decode(compressed[:], options={
+      ..DecodeOptions::default(),
+      format: Format::Lzma,
+    }),
+    src,
+  )
 }
 
 ///|
 test "full_flush_is_rejected" {
-  let enc = Encoder::new()
+  let src = b"flush-y"
+  let enc = Encoder::new(options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma,
+  })
   let out = OutputBuf::new(size=16)
   let err = @test.expect_error(() => {
-    enc.code(b"x"[:], out, Action::FullFlush) |> ignore
+    enc.code(src[:], out, Action::FullFlush) |> ignore
   })
   assert_true(err is InvalidConfiguration(_))
+  assert_eq(enc.total_in(), 0UL)
+  assert_eq(enc.total_out(), 0UL)
+  assert_eq(out.written(), b"")
+  enc.write(src[:])
+  let compressed = enc.finish()
+  assert_eq(
+    decode(compressed[:], options={
+      ..DecodeOptions::default(),
+      format: Format::Lzma,
+    }),
+    src,
+  )
 }
 
 ///|
 test "decoder_full_flush_is_rejected" {
-  let dec = Decoder::new()
+  let src = b"dfull"
+  let compressed = encode(src[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma,
+  })
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    format: Format::Lzma,
+  })
   let out = OutputBuf::new(size=16)
   let err = @test.expect_error(() => {
-    dec.code(b"x"[:], out, Action::FullFlush) |> ignore
+    dec.code(compressed[:], out, Action::FullFlush) |> ignore
   })
   assert_true(err is InvalidConfiguration(_))
+  assert_eq(dec.total_in(), 0UL)
+  assert_eq(dec.total_out(), 0UL)
+  assert_eq(out.written(), b"")
+  dec.write(compressed[:])
+  assert_eq(dec.finish(), src)
 }
 
 ///|
@@ -1607,12 +1653,25 @@ test "reset_after_need_output" {
 
 ///|
 test "decoder_sync_flush_is_rejected" {
-  let dec = Decoder::new()
+  let src = b"dsync"
+  let compressed = encode(src[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma,
+  })
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    format: Format::Lzma,
+  })
   let out = OutputBuf::new(size=16)
   let err = @test.expect_error(() => {
-    dec.code(b"x"[:], out, Action::SyncFlush) |> ignore
+    dec.code(compressed[:], out, Action::SyncFlush) |> ignore
   })
   assert_true(err is InvalidConfiguration(_))
+  assert_eq(dec.total_in(), 0UL)
+  assert_eq(dec.total_out(), 0UL)
+  assert_eq(out.written(), b"")
+  dec.write(compressed[:])
+  assert_eq(dec.finish(), src)
 }
 
 ///|

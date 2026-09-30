@@ -25,9 +25,11 @@ pub(all) enum Action {
   /// Adds input. The decoder may complete and emit once a full stream is
   /// available; the encoder remains buffered until `Finish`.
   Run
-  /// Unsupported; `code` raises `InvalidConfiguration`.
+  /// Unsupported: `code` raises `InvalidConfiguration` before consuming input
+  /// or writing output; this is never treated as `Run`.
   SyncFlush
-  /// Unsupported; `code` raises `InvalidConfiguration`.
+  /// Unsupported: `code` raises `InvalidConfiguration` before consuming input
+  /// or writing output; this is never treated as `Run`.
   FullFlush
   /// Ends input and drains through `encode` / `decode`.
   Finish

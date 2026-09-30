@@ -50,20 +50,21 @@ python3 scripts/diff_encode.py
 | XZ 容器内 ARM-Thumb BCJ | `bcj_armthumb` 镜像 `simple/armthumb.c`；`xz --armthumb` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x08` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM-Thumb-BCJ+LZMA2；ARM-Thumb 属性非空 / 作为最后一条 → `Data` |
 | XZ 容器内 ARM64 BCJ | `bcj_arm64` 与 `lzma_bcj_arm64_*` 字节一致（BL/ADRP 向量）；`xz --arm64` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x0A` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM64-BCJ+LZMA2；ARM64 属性非空 / ARM64 作为最后一条 → `Data` |
 | XZ 容器内 ARM BCJ | `bcj_arm` 镜像 `simple/arm.c`；`xz --arm` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x07` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM-BCJ+LZMA2；ARM 属性非空 / ARM 作为最后一条 → `Data`；多前置过滤器同给 → `Data` |
+| Flush 拒绝语义 | `Encoder`/`Decoder` 对 `SyncFlush`/`FullFlush` 抛 `InvalidConfiguration`，不消费输入、不写输出、计数不变、不按 `Run`；拒绝后仍可正常 `write`/`finish` |
 | `.lzma` 增量解码 | 1 字节与固定种子随机 chunk 与一次性 `decode` 明文一致；13 字节 header 逐字节/逐长度切开；unknown size（`0xFF..FF`）靠 end marker 收尾；截断 header → `Eof`；非法属性 → `Data`；memlimit 过小 → `Limit`；`StreamEnd` 后再喂输入 → `Data` |
 | XZ 容器内 SPARC BCJ | `bcj_sparc` 镜像 `simple/sparc.c`；`xz --sparc` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x09` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 SPARC-BCJ+LZMA2；属性非空 / 作为最后一条 → `Data` |
 | XZ 容器内 x86 BCJ | `bcj_x86` 与 `lzma_bcj_x86_*` 字节一致（overlap / prev_mask 向量）；`xz --x86` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x04` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 x86-BCJ+LZMA2；x86 属性非空 / x86 作为最后一条 → `Data`，未知 prefilter / 三过滤器链 → `Unsupported` |
 
 ## T7 — 真正增量的流式状态机
 
-当前已完成 T7a 的 API 契约、`NeedInput`/`NeedOutput`、随机分块回归，T7b 的裸 LZMA2 控制头/完整 chunk 状态机，T7c 的 LZMA 符号级 active payload，T7d 的单 Stream XZ Header、Block、payload、Index/Footer 增量状态，以及 `.lzma` 的增量头部与符号级 payload（声明大小时仍要求并校验 end marker）。声明压缩大小的 XZ Block 会复用 active LZMA2 解码器并在 Footer 前产生明文；`concatenated=true`、无压缩大小字段的 Block 和带根级额外 filters 的 XZ 保持兼容路径。三种容器的 `Decoder::code(..., Run)` 已真正增量；剩余为 `Encoder` 的增量输出与 `SyncFlush`/`FullFlush` 语义。
+当前已完成 T7a 的 API 契约、`NeedInput`/`NeedOutput`、随机分块回归，T7b 的裸 LZMA2 控制头/完整 chunk 状态机，T7c 的 LZMA 符号级 active payload，T7d 的单 Stream XZ Header、Block、payload、Index/Footer 增量状态，以及 `.lzma` 的增量头部与符号级 payload（声明大小时仍要求并校验 end marker）。声明压缩大小的 XZ Block 会复用 active LZMA2 解码器并在 Footer 前产生明文；`concatenated=true`、无压缩大小字段的 Block 和带根级额外 filters 的 XZ 保持兼容路径。三种容器的 `Decoder::code(..., Run)` 已真正增量；`SyncFlush`/`FullFlush` 已冻结为拒绝语义并写死（见回归表与 `docs/api.md`）；剩余为 `Encoder` 的增量输出。
 
 **问题**：`Encoder`/`Decoder` 在 `Finish` 前缓冲全部输入，再调用一次性 `encode`/`decode`。`Run` 不产生输出；`NeedInput` 不会发出；`SyncFlush`/`FullFlush` 被拒绝。这不是 liblzma 的增量语义。
 
 **范围**：
 
 - 按字节/块推进 range coder 与 LZMA/LZMA2/XZ 状态；合法输入任意切分，`code(..., Run)` 即可出明文/码流。
-- 定义并实现 `SyncFlush` / `FullFlush`（或继续拒绝并在文档写死——不得 silently 当成 `Run`）。
+- `SyncFlush` / `FullFlush`：**已冻结为继续拒绝**——`InvalidConfiguration`，不消费输入 / 不写输出 / 不改计数 / 不按 `Run` 处理；`docs/api.md` 写死，测试锁定。
 - `NeedInput` / `NeedOutput` 与 `consumed`/`produced` 可测试。
 - 不得再做第二套编解码器；一次性 API 必须走同一状态机。
 
@@ -85,7 +86,7 @@ python3 scripts/diff_encode.py
 Flush：
 
 - 若实现 `SyncFlush`/`FullFlush`：各有正例（flush 后参考解码器能解已写出的码流前缀，或文档规定的可解码边界）；重复 flush 不损坏状态。
-- 若继续拒绝：现有 `InvalidConfiguration` 测试保留；`docs/api.md` 写死「不是 `Run`」。禁止把 Flush 当成 `Run` 吞掉。
+- 继续拒绝（已实现并锁定）：encoder/decoder 各 `SyncFlush` / `FullFlush` 负例断言 `InvalidConfiguration`、`total_in`/`total_out` 不变、`output` 未写入，且拒绝后正常 `write`/`finish` 仍可用；`docs/api.md` 写死「不是 `Run`」。
 
 负例：
 
