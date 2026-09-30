@@ -102,85 +102,81 @@ priv struct EncChoice {
 
 ///|
 fn no_choice() -> EncChoice {
-  { kind: 0, len: 1, dist: 0U, price: 0x7FFFFFFF }
+  { kind: 0, len: 1, dist: 0U, price: 0x7FFFFFFF, }
 }
 
 ///|
 fn LzmaEnc::price_short_rep(self : LzmaEnc, ps : Int) -> Int {
   bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
-    bit_price(self.probs.is_rep[self.state], 1) +
-    bit_price(self.probs.is_rep_g0[self.state], 0) +
-    bit_price(self.probs.is_rep0_long[self.state * 16 + ps], 0)
+  bit_price(self.probs.is_rep[self.state], 1) +
+  bit_price(self.probs.is_rep_g0[self.state], 0) +
+  bit_price(self.probs.is_rep0_long[self.state * 16 + ps], 0)
 }
 
 ///|
-fn LzmaEnc::price_rep0(
-  self : LzmaEnc,
-  ps : Int,
-  len : Int,
-) -> Int {
+fn LzmaEnc::price_rep0(self : LzmaEnc, ps : Int, len : Int) -> Int {
   bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
-    bit_price(self.probs.is_rep[self.state], 1) +
-    bit_price(self.probs.is_rep_g0[self.state], 0) +
-    bit_price(self.probs.is_rep0_long[self.state * 16 + ps], 1) +
-    length_price(
-      self.probs.rep_len_choice,
-      self.probs.rep_len_low,
-      self.probs.rep_len_mid,
-      self.probs.rep_len_high,
-      ps,
-      len,
-    )
+  bit_price(self.probs.is_rep[self.state], 1) +
+  bit_price(self.probs.is_rep_g0[self.state], 0) +
+  bit_price(self.probs.is_rep0_long[self.state * 16 + ps], 1) +
+  length_price(
+    self.probs.rep_len_choice,
+    self.probs.rep_len_low,
+    self.probs.rep_len_mid,
+    self.probs.rep_len_high,
+    ps,
+    len,
+  )
 }
 
 ///|
 fn LzmaEnc::price_rep1(self : LzmaEnc, ps : Int, len : Int) -> Int {
   bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
-    bit_price(self.probs.is_rep[self.state], 1) +
-    bit_price(self.probs.is_rep_g0[self.state], 1) +
-    bit_price(self.probs.is_rep_g1[self.state], 0) +
-    length_price(
-      self.probs.rep_len_choice,
-      self.probs.rep_len_low,
-      self.probs.rep_len_mid,
-      self.probs.rep_len_high,
-      ps,
-      len,
-    )
+  bit_price(self.probs.is_rep[self.state], 1) +
+  bit_price(self.probs.is_rep_g0[self.state], 1) +
+  bit_price(self.probs.is_rep_g1[self.state], 0) +
+  length_price(
+    self.probs.rep_len_choice,
+    self.probs.rep_len_low,
+    self.probs.rep_len_mid,
+    self.probs.rep_len_high,
+    ps,
+    len,
+  )
 }
 
 ///|
 fn LzmaEnc::price_rep2(self : LzmaEnc, ps : Int, len : Int) -> Int {
   bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
-    bit_price(self.probs.is_rep[self.state], 1) +
-    bit_price(self.probs.is_rep_g0[self.state], 1) +
-    bit_price(self.probs.is_rep_g1[self.state], 1) +
-    bit_price(self.probs.is_rep_g2[self.state], 0) +
-    length_price(
-      self.probs.rep_len_choice,
-      self.probs.rep_len_low,
-      self.probs.rep_len_mid,
-      self.probs.rep_len_high,
-      ps,
-      len,
-    )
+  bit_price(self.probs.is_rep[self.state], 1) +
+  bit_price(self.probs.is_rep_g0[self.state], 1) +
+  bit_price(self.probs.is_rep_g1[self.state], 1) +
+  bit_price(self.probs.is_rep_g2[self.state], 0) +
+  length_price(
+    self.probs.rep_len_choice,
+    self.probs.rep_len_low,
+    self.probs.rep_len_mid,
+    self.probs.rep_len_high,
+    ps,
+    len,
+  )
 }
 
 ///|
 fn LzmaEnc::price_rep3(self : LzmaEnc, ps : Int, len : Int) -> Int {
   bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
-    bit_price(self.probs.is_rep[self.state], 1) +
-    bit_price(self.probs.is_rep_g0[self.state], 1) +
-    bit_price(self.probs.is_rep_g1[self.state], 1) +
-    bit_price(self.probs.is_rep_g2[self.state], 1) +
-    length_price(
-      self.probs.rep_len_choice,
-      self.probs.rep_len_low,
-      self.probs.rep_len_mid,
-      self.probs.rep_len_high,
-      ps,
-      len,
-    )
+  bit_price(self.probs.is_rep[self.state], 1) +
+  bit_price(self.probs.is_rep_g0[self.state], 1) +
+  bit_price(self.probs.is_rep_g1[self.state], 1) +
+  bit_price(self.probs.is_rep_g2[self.state], 1) +
+  length_price(
+    self.probs.rep_len_choice,
+    self.probs.rep_len_low,
+    self.probs.rep_len_mid,
+    self.probs.rep_len_high,
+    ps,
+    len,
+  )
 }
 
 ///|
@@ -191,29 +187,37 @@ fn LzmaEnc::price_new_match(
   dist : UInt,
 ) -> Int {
   bit_price(self.probs.is_match[self.state * 16 + ps], 1) +
-    bit_price(self.probs.is_rep[self.state], 0) +
-    length_price(
-      self.probs.len_choice,
-      self.probs.len_low,
-      self.probs.len_mid,
-      self.probs.len_high,
-      ps,
-      len,
-    ) +
-    distance_price(self.probs, len, dist)
+  bit_price(self.probs.is_rep[self.state], 0) +
+  length_price(
+    self.probs.len_choice,
+    self.probs.len_low,
+    self.probs.len_mid,
+    self.probs.len_high,
+    ps,
+    len,
+  ) +
+  distance_price(self.probs, len, dist)
 }
 
 ///|
-fn consider(cur : EncChoice, kind : Int, len : Int, dist : UInt, price : Int) -> EncChoice {
+fn consider(
+  cur : EncChoice,
+  kind : Int,
+  len : Int,
+  dist : UInt,
+  price : Int,
+) -> EncChoice {
   // Prefer longer matches (greedy length); use price only to break ties,
   // then lower kind (reps before new match).
   if cur.kind == 0 {
-    return { kind, len, dist, price }
+    return { kind, len, dist, price, }
   }
   if len > cur.len ||
-    (len == cur.len &&
-    (price < cur.price || (price == cur.price && kind < cur.kind))) {
-    { kind, len, dist, price }
+    (
+      len == cur.len &&
+      (price < cur.price || (price == cur.price && kind < cur.kind))
+    ) {
+    { kind, len, dist, price, }
   } else {
     cur
   }
@@ -411,8 +415,10 @@ pub fn LzmaEnc::encode_chunk(
         )
         if next.kind != 0 &&
           next.len >= 2 &&
-          (next.len > cur.len ||
-          (next.len == cur.len && lit_p + next.price < cur.price)) {
+          (
+            next.len > cur.len ||
+            (next.len == cur.len && lit_p + next.price < cur.price)
+          ) {
           take = no_choice() // emit literal this step
         } else {
           take = cur

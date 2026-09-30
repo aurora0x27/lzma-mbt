@@ -1,9 +1,9 @@
 ///|
 /// Approximate bit prices from current probability models (LZMA SDK style).
 /// Used only for parse decisions; the range coder still emits the real bits.
-
 const BitPriceShift : Int = 4
 
+///|
 const MoveReducingBits : Int = 4
 
 ///|
@@ -19,7 +19,7 @@ fn make_prob_prices() -> Array[Int] {
     while j < BitPriceShift {
       w = w * w
       bit_count = bit_count << 1
-      while w >= (1 << 16) {
+      while w >= 1 << 16 {
         w = w >> 1
         bit_count = bit_count + 1
       }
@@ -54,7 +54,12 @@ fn bit_price(prob : UInt, bit : Int) -> Int {
 }
 
 ///|
-fn tree_price(probs : Array[UInt], base : Int, num_bits : Int, value : Int) -> Int {
+fn tree_price(
+  probs : Array[UInt],
+  base : Int,
+  num_bits : Int,
+  value : Int,
+) -> Int {
   let mut price = 0
   let mut m = 1
   let mut i = num_bits
@@ -100,12 +105,12 @@ fn length_price(
     bit_price(choice[0], 0) + tree_price(low, pos_st * 8, 3, n)
   } else if n < 16 {
     bit_price(choice[0], 1) +
-      bit_price(choice[1], 0) +
-      tree_price(mid, pos_st * 8, 3, n - 8)
+    bit_price(choice[1], 0) +
+    tree_price(mid, pos_st * 8, 3, n - 8)
   } else {
     bit_price(choice[0], 1) +
-      bit_price(choice[1], 1) +
-      tree_price(high, 0, 8, n - 16)
+    bit_price(choice[1], 1) +
+    tree_price(high, 0, 8, n - 16)
   }
 }
 
@@ -138,15 +143,15 @@ fn distance_price(probs : Probs, len : Int, dist : UInt) -> Int {
 ///|
 /// Map dictionary size (from preset) to a nice_len threshold for lazy matching.
 fn nice_len_for_dict(dict_size : Int) -> Int {
-  if dict_size <= (1 << 18) {
+  if dict_size <= 1 << 18 {
     8
-  } else if dict_size <= (1 << 20) {
+  } else if dict_size <= 1 << 20 {
     16
-  } else if dict_size <= (1 << 22) {
+  } else if dict_size <= 1 << 22 {
     32
-  } else if dict_size <= (1 << 23) {
+  } else if dict_size <= 1 << 23 {
     64
-  } else if dict_size <= (1 << 24) {
+  } else if dict_size <= 1 << 24 {
     64
   } else {
     128

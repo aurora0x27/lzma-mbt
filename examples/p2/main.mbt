@@ -52,6 +52,8 @@ fn main raise {
   println("p2 ok — 大段文字")
   println("  input=\{input}")
   println("  plain=\{plain.length()} bytes")
-  println("  xz=\{compressed.length()} bytes (\{pct10 / 10}.\{pct10 % 10}% of original)")
+  println(
+    "  xz=\{compressed.length()} bytes (\{pct10 / 10}.\{pct10 % 10}% of original)",
+  )
   println("  roundtrip_ok=true")
 }

@@ -52,7 +52,11 @@ fn main raise {
   println("p5 ok — 大图片")
   println("  input=\{input}")
   println("  plain=\{plain.length()} bytes")
-  println("  xz=\{compressed.length()} bytes (\{pct10 / 10}.\{pct10 % 10}% of original)")
-  println("  note: 大图多为已压缩格式；本例侧重正确性与耗时体验")
+  println(
+    "  xz=\{compressed.length()} bytes (\{pct10 / 10}.\{pct10 % 10}% of original)",
+  )
+  println(
+    "  note: 大图多为已压缩格式；本例侧重正确性与耗时体验",
+  )
   println("  roundtrip_ok=true")
 }

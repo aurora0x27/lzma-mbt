@@ -52,7 +52,9 @@ fn main raise {
   println("p4 ok — 小图片")
   println("  input=\{input}")
   println("  plain=\{plain.length()} bytes")
-  println("  xz=\{compressed.length()} bytes (\{pct10 / 10}.\{pct10 % 10}% of original)")
+  println(
+    "  xz=\{compressed.length()} bytes (\{pct10 / 10}.\{pct10 % 10}% of original)",
+  )
   println("  note: PNG 已是压缩格式，LZMA 收益通常很小")
   println("  roundtrip_ok=true")
 }
