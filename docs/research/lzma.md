@@ -24,7 +24,20 @@ Probability tables (`is_match`, `is_rep*`, length, pos slot, align, literals), f
 
 Per symbol: decode `is_match[state][pos_state]`. Literal vs match/rep. Length/distance as in LZMA SDK. Copy from dictionary.
 
-Encoder: at each position prefer a repeat of length ≥ 2, else a new match ≥ 2 from a bounded backward search (lookback capped at 4096 even if `dict_size` is larger), else a literal. Always emit an end marker. One-shot encode writes the real unpacked size. LZMA2 reuses the same session across chunks: match length is capped at the remaining bytes of the current chunk so a match cannot cross a chunk boundary.
+Encoder: at each position prefer a repeat of length ≥ 2, else a new match ≥ 2 from a **hash-chain (HC3-style) match finder**, else a literal. Lookback remains capped at 4096 even if `dict_size` is larger; chain walk depth is capped at 64. The previous implementation scanned every distance in `1..=4096` (O(n·lookback)); the hash chain only probes recent positions that share the same 3-byte prefix. Always emit an end marker. One-shot encode writes the real unpacked size. LZMA2 reuses the same session across chunks: match length is capped at the remaining bytes of the current chunk so a match cannot cross a chunk boundary.
+
+## Performance note (match finder)
+
+Measured on macOS with `moon run examples/p6` (wasm-gc), preset-6 defaults, before → after switching to HC3:
+
+| Input | Before (s) | After (s) | Size ratio after |
+| --- | ---: | ---: | ---: |
+| theme-icon.png (7.4 KiB) | 0.40 | 0.36 | 1.007 |
+| TrueLove.jpg (710 KiB) | 49.2 | 0.54 | 0.984 |
+| River.png (2.6 MiB) | 186 | 1.94 | 0.993 |
+| CuteCat.png (4.9 MiB) | 360 | 3.64 | 1.000 |
+
+Round-trip `cmp` identical for all four; `scripts/diff_encode.py` (35 cases) green. Encoder bytes are still not required to match `xz -6`.
 
 ## Invariants
 
@@ -50,4 +63,4 @@ Greedy encoding will not match `xz -6` bytes. Decoder alignment with `liblzma` i
 
 ## Open questions
 
-Optimal parsing is deferred (performance milestone).
+Optimal parsing remains deferred (performance milestone M10 / T8). Further match-finder tuning (HC4, binary tree, larger chain depth) is optional once T8 is scheduled.

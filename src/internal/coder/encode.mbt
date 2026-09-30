@@ -21,41 +21,6 @@ fn match_len_at(
 }
 
 ///|
-fn find_new_match(
-  input : BytesView,
-  pos : Int,
-  dict_size : Int,
-  window : Int,
-  avail : Int,
-) -> (Int, UInt)? {
-  if avail < 2 {
-    return None
-  }
-  let max_len = min_int(273, avail)
-  // Cap lookback at 4096: greedy search is O(window), not the full dict_size.
-  let max_dist = min_int(window, min_int(dict_size, 4096))
-  let mut best_len = 1
-  let mut best_dist = 0U
-  let mut d = 1
-  while d <= max_dist {
-    let len = match_len_at(input, pos, d - 1, max_len, window)
-    if len > best_len {
-      best_len = len
-      best_dist = int_as_uint(d - 1)
-      if len == max_len {
-        break
-      }
-    }
-    d = d + 1
-  }
-  if best_len >= 2 {
-    Some((best_len, best_dist))
-  } else {
-    None
-  }
-}
-
-///|
 /// LZMA encoder session. Probability tables and reps persist across LZMA2
 /// chunks; each chunk still gets a fresh range encoder.
 struct LzmaEnc {
@@ -136,12 +101,17 @@ pub fn LzmaEnc::encode_chunk(
 ) -> Bytes {
   let enc = @rc.RangeEncoder::new()
   let to = from + n
+  // Only the last MATCH_LOOKBACK bytes can be referenced; seed that window.
+  let seed_from = if from > MatchLookback { from - MatchLookback } else { 0 }
+  let mf = MatchFinder::new(seed_from)
+  mf.seed(input, seed_from, from)
   let mut abs = from
   while abs < to {
     let ps = pos_state(self.pos, self.pb)
     let prev = if self.pos == 0 { b'\x00' } else { input[abs - 1] }
     let avail = to - abs
     let mut used_match = false
+    let mut step = 1
     if avail >= 2 && self.pos > 0 {
       let max_len = min_int(273, avail)
       let mut best_kind = 0
@@ -177,7 +147,7 @@ pub fn LzmaEnc::encode_chunk(
         best_len = l3
         best_dist = self.r3
       }
-      match find_new_match(input, abs, self.dict_size, self.pos, avail) {
+      match mf.find(input, abs, self.pos, avail) {
         Some((nl, nd)) =>
           if nl > best_len {
             best_kind = 6
@@ -192,8 +162,7 @@ pub fn LzmaEnc::encode_chunk(
         enc.encode_bit(self.probs.is_rep_g0, self.state, 0)
         enc.encode_bit(self.probs.is_rep0_long, self.state * 16 + ps, 0)
         self.state = state_short_rep(self.state)
-        abs = abs + 1
-        self.pos = self.pos + 1
+        step = 1
         used_match = true
       } else if best_kind >= 2 && best_len >= 2 {
         enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 1)
@@ -247,8 +216,7 @@ pub fn LzmaEnc::encode_chunk(
           )
           self.state = state_rep(self.state)
         }
-        abs = abs + best_len
-        self.pos = self.pos + best_len
+        step = best_len
         used_match = true
       }
     }
@@ -267,9 +235,16 @@ pub fn LzmaEnc::encode_chunk(
       let base = lit_index(self.pos, prev, self.lc, self.lp) * 0x300
       encode_literal(enc, self.probs.lit, base, self.state, match_b, input[abs])
       self.state = state_lit(self.state)
-      abs = abs + 1
-      self.pos = self.pos + 1
+      step = 1
     }
+    // Index every consumed position so later searches can find it.
+    let mut i = 0
+    while i < step {
+      mf.insert(input, abs + i)
+      i = i + 1
+    }
+    abs = abs + step
+    self.pos = self.pos + step
   }
   if end_marker {
     let ps = pos_state(self.pos, self.pb)
