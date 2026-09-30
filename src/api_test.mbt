@@ -155,17 +155,36 @@ fn stream_encode_run_finish(
   format : Format,
 ) -> Bytes raise LzmaError {
   let enc = Encoder::new(options={ ..EncodeOptions::default(), format, })
-  let out = OutputBuf::new(size=1)
+  let arr = Array()
   let mut pos = 0
   let mut seed = 17
   while pos < src.length() {
     seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
     let step = seed % 19 + 1
     let end = if pos + step > src.length() { src.length() } else { pos + step }
-    enc.code(src[pos:end], out, Action::Run) |> ignore
+    let out = OutputBuf::new(size=1)
+    let r = enc.code(src[pos:end], out, Action::Run)
+    for b in out.written()[:] {
+      arr.push(b)
+    }
+    if r.status is NeedOutput {
+      let mut draining = true
+      while draining {
+        let tail = OutputBuf::new(size=1)
+        let more = enc.code(b""[:], tail, Action::Run)
+        for b in tail.written()[:] {
+          arr.push(b)
+        }
+        draining = more.status is NeedOutput
+      }
+    }
     pos = end
   }
-  enc.finish()
+  let rest = enc.finish()
+  for b in rest[:] {
+    arr.push(b)
+  }
+  Bytes::from_array(arr[:])
 }
 
 ///|
@@ -816,7 +835,21 @@ test "run_before_finish_needs_more_input" {
   let r = enc.code(b"x"[:], out, Action::Run)
   assert_eq(r.status, NeedInput)
   assert_eq(r.consumed, 1)
-  assert_eq(r.produced, 0)
+  let arr = Array()
+  for b in out.written()[:] {
+    arr.push(b)
+  }
+  let rest = enc.finish()
+  for b in rest[:] {
+    arr.push(b)
+  }
+  assert_eq(
+    decode(Bytes::from_array(arr[:])[:], options={
+      ..DecodeOptions::default(),
+      format: Format::Lzma,
+    }),
+    b"x",
+  )
 }
 
 ///|
@@ -1080,7 +1113,15 @@ test "finish_after_code_run" {
   })
   let out = OutputBuf::new(size=16)
   ignore(encoder.code(src[:], out, Action::Run))
-  let compressed = encoder.finish()
+  let arr = Array()
+  for b in out.written()[:] {
+    arr.push(b)
+  }
+  let rest = encoder.finish()
+  for b in rest[:] {
+    arr.push(b)
+  }
+  let compressed = Bytes::from_array(arr[:])
   let dec = decode(compressed[:], options={
     ..DecodeOptions::default(),
     format: Format::Lzma,
@@ -1910,4 +1951,106 @@ test "decoder_code_lzma_over_64k" {
   let r = dec.code(enc[:], out, Action::Finish)
   assert_eq(r.status, StreamEnd)
   assert_eq(out.written(), src)
+}
+
+///|
+/// Encode incrementally with `code(..., Run)` and one-byte output slots,
+/// draining `NeedOutput`, then `Finish`.
+fn stream_encode_collect(src : Bytes, format : Format) -> Bytes raise LzmaError {
+  let enc = Encoder::new(options={ ..EncodeOptions::default(), format, })
+  let arr = Array()
+  let mut pos = 0
+  while pos < src.length() {
+    let n = if src.length() - pos > 4096 { 4096 } else { src.length() - pos }
+    let out = OutputBuf::new(size=1)
+    let r = enc.code(src[pos:pos + n], out, Action::Run)
+    for b in out.written()[:] {
+      arr.push(b)
+    }
+    let mut draining = r.status is NeedOutput
+    while draining {
+      let tail = OutputBuf::new(size=1)
+      let more = enc.code(b""[:], tail, Action::Run)
+      for b in tail.written()[:] {
+        arr.push(b)
+      }
+      draining = more.status is NeedOutput
+    }
+    pos = pos + n
+  }
+  let rest = enc.finish()
+  for b in rest[:] {
+    arr.push(b)
+  }
+  Bytes::from_array(arr[:])
+}
+
+///|
+test "encoder_run_lzma2_matches_one_shot_bytes" {
+  for src in [b"", b"a", b"hello lzma", Bytes::make(70000, b'\x5A')] {
+    let streamed = stream_encode_collect(src, Format::Lzma2)
+    let one = encode(src[:], options={
+      ..EncodeOptions::default(),
+      format: Format::Lzma2,
+    })
+    assert_eq(streamed, one)
+  }
+}
+
+///|
+test "encoder_run_roundtrip_all_formats" {
+  for src in [b"", b"a", b"encoder run", Bytes::make(70000, b'\x33')] {
+    for format in [Format::Lzma, Format::Lzma2, Format::Xz] {
+      let streamed = stream_encode_collect(src, format)
+      assert_eq(
+        decode(streamed[:], options={ ..DecodeOptions::default(), format, }),
+        src,
+      )
+    }
+  }
+}
+
+///|
+test "encoder_run_need_input_then_finish" {
+  let src = b"need input"
+  let enc = Encoder::new(options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma,
+  })
+  let out = OutputBuf::new(size=64)
+  let r = enc.code(src[:], out, Action::Run)
+  assert_eq(r.status, NeedInput)
+  assert_eq(r.consumed, src.length())
+  let arr = Array()
+  for b in out.written()[:] {
+    arr.push(b)
+  }
+  let rest = enc.finish()
+  for b in rest[:] {
+    arr.push(b)
+  }
+  assert_eq(
+    decode(Bytes::from_array(arr[:])[:], options={
+      ..DecodeOptions::default(),
+      format: Format::Lzma,
+    }),
+    src,
+  )
+}
+
+///|
+test "encoder_stream_xz_has_stream_header_early" {
+  let enc = Encoder::new()
+  let out = OutputBuf::new(size=64)
+  let r = enc.code(b"x"[:], out, Action::Run)
+  assert_eq(r.status, NeedInput)
+  // Stream Header is written as soon as the encoder starts.
+  assert_true(out.written().length() >= 12)
+  assert_eq(out.written()[0], b'\xFD')
+  assert_eq(out.written()[1], b'\x37')
+  assert_eq(out.written()[2], b'\x7A')
+  assert_eq(out.written()[3], b'X')
+  assert_eq(out.written()[4], b'Z')
+  assert_eq(out.written()[5], b'\x00')
+  ignore(enc.finish())
 }

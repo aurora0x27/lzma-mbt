@@ -32,6 +32,7 @@ REQUIRED_CASES = {
     "short_xz_p6_sha256",
     "short_xz_delta_d1_p6_crc64",
     "short_xz_bcj_p6_crc64",
+    "stream_xz_p6_crc64",
     "short_xz_arm_p6_crc64",
     "short_xz_arm64_p6_crc64",
     "short_xz_armthumb_p6_crc64",

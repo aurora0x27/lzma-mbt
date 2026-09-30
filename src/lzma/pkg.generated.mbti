@@ -32,6 +32,23 @@ pub fn StreamDecoder::new(UInt64) -> Self
 pub fn StreamDecoder::parse_header(Self) -> Unit raise @coder.CoderError
 pub fn StreamDecoder::reset(Self) -> Unit
 
+pub struct StreamEncoder {
+  mut rc : @range_coder.RangeEncoder
+  mut enc : @coder.LzmaEnc
+  mut window : Array[Byte]
+  mut start : Int
+  lc : Int
+  lp : Int
+  pb : Int
+  dict_size : UInt
+  mut started : Bool
+  mut ended : Bool
+}
+pub fn StreamEncoder::feed(Self, BytesView, Bool) -> Bytes raise @coder.CoderError
+pub fn StreamEncoder::finish(Self) -> Bytes raise @coder.CoderError
+pub fn StreamEncoder::new(Int, Int, Int, UInt) -> Self
+pub fn StreamEncoder::reset(Self) -> Unit
+
 // Type aliases
 
 // Traits

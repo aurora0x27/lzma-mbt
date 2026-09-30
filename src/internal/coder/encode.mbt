@@ -361,14 +361,15 @@ fn LzmaEnc::emit_choice(
 }
 
 ///|
-pub fn LzmaEnc::encode_chunk(
+/// Encode `n` input bytes into an existing range encoder without flushing it.
+/// Used by both the one-shot path and the streaming encoder.
+pub fn LzmaEnc::encode_stream(
   self : LzmaEnc,
+  enc : @rc.RangeEncoder,
   input : BytesView,
   from : Int,
   n : Int,
-  end_marker? : Bool = false,
-) -> Bytes {
-  let enc = @rc.RangeEncoder::new()
+) -> Unit {
   let to = from + n
   let seed_back = min_int(self.dict_size, MatchSeedCap)
   let seed_from = if from > seed_back { from - seed_back } else { 0 }
@@ -440,20 +441,41 @@ pub fn LzmaEnc::encode_chunk(
     abs = abs + step
     self.pos = self.pos + step
   }
+}
+
+///|
+/// Write the LZMA end-of-stream marker into an existing range encoder.
+pub fn LzmaEnc::write_end_marker(
+  self : LzmaEnc,
+  enc : @rc.RangeEncoder,
+) -> Unit {
+  let ps = pos_state(self.pos, self.pb)
+  enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 1)
+  enc.encode_bit(self.probs.is_rep, self.state, 0)
+  encode_length(
+    enc,
+    self.probs.len_choice,
+    self.probs.len_low,
+    self.probs.len_mid,
+    self.probs.len_high,
+    ps,
+    2,
+  )
+  encode_distance(enc, self.probs, 2, 0xFFFFFFFFU)
+}
+
+///|
+pub fn LzmaEnc::encode_chunk(
+  self : LzmaEnc,
+  input : BytesView,
+  from : Int,
+  n : Int,
+  end_marker? : Bool = false,
+) -> Bytes {
+  let enc = @rc.RangeEncoder::new()
+  self.encode_stream(enc, input, from, n)
   if end_marker {
-    let ps = pos_state(self.pos, self.pb)
-    enc.encode_bit(self.probs.is_match, self.state * 16 + ps, 1)
-    enc.encode_bit(self.probs.is_rep, self.state, 0)
-    encode_length(
-      enc,
-      self.probs.len_choice,
-      self.probs.len_low,
-      self.probs.len_mid,
-      self.probs.len_high,
-      ps,
-      2,
-    )
-    encode_distance(enc, self.probs, 2, 0xFFFFFFFFU)
+    self.write_end_marker(enc)
   }
   enc.flush()
 }

@@ -45,6 +45,25 @@ pub fn StreamDecoder::finish(Self) -> Bytes raise @coder.CoderError
 pub fn StreamDecoder::new(UInt64, Bool) -> Self
 pub fn StreamDecoder::reset(Self) -> Unit
 
+pub struct StreamEncoder {
+  lzma2 : @lzma2.StreamEncoder
+  check_id : Int
+  check_n : Int
+  flags : Bytes
+  hbytes : Bytes
+  hbytes_len : Int
+  mut payload_len : Int
+  mut plain_len : UInt64
+  mut crc32_acc : UInt
+  mut crc64_acc : UInt64
+  mut started : Bool
+  mut ended : Bool
+}
+pub fn StreamEncoder::feed(Self, BytesView, Bool) -> Bytes raise @coder.CoderError
+pub fn StreamEncoder::finish(Self) -> Bytes raise @coder.CoderError
+pub fn StreamEncoder::new(Int, Int, Int, UInt, Int) -> Self raise @coder.CoderError
+pub fn StreamEncoder::reset(Self) -> Unit
+
 // Type aliases
 
 // Traits

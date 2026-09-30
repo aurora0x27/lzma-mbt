@@ -57,6 +57,9 @@ priv struct Session {
   stream_decoder : @lzma2.StreamDecoder?
   lzma_decoder : @lzma.StreamDecoder?
   xz_decoder : @xz.StreamDecoder?
+  lzma_encoder : @lzma.StreamEncoder?
+  lzma2_encoder : @lzma2.StreamEncoder?
+  xz_encoder : @xz.StreamEncoder?
   mut pending_pos : Int
   mut finished : Bool
   mut complete : Bool
@@ -81,6 +84,9 @@ fn Session::fresh(
   stream_decoder? : @lzma2.StreamDecoder? = None,
   lzma_decoder? : @lzma.StreamDecoder? = None,
   xz_decoder? : @xz.StreamDecoder? = None,
+  lzma_encoder? : @lzma.StreamEncoder? = None,
+  lzma2_encoder? : @lzma2.StreamEncoder? = None,
+  xz_encoder? : @xz.StreamEncoder? = None,
 ) -> Session {
   {
     input: [],
@@ -88,6 +94,9 @@ fn Session::fresh(
     stream_decoder,
     lzma_decoder,
     xz_decoder,
+    lzma_encoder,
+    lzma2_encoder,
+    xz_encoder,
     pending_pos: 0,
     finished: false,
     complete: false,
@@ -116,6 +125,18 @@ fn Session::clear(self : Session) -> Unit {
   match self.xz_decoder {
     None => ()
     Some(dec) => dec.reset()
+  }
+  match self.lzma_encoder {
+    None => ()
+    Some(enc) => enc.reset()
+  }
+  match self.lzma2_encoder {
+    None => ()
+    Some(enc) => enc.reset()
+  }
+  match self.xz_encoder {
+    None => ()
+    Some(enc) => enc.reset()
   }
 }
 
@@ -226,9 +247,6 @@ fn Session::code(
   // this call's input so the caller can retry with the same bytes.
   if action is Finish && self.complete == false && output.data.length() == 0 {
     raise BufferTooSmall
-  }
-  for b in input {
-    self.input.push(b)
   }
   let consumed = input.length()
   self.total_in = add_count(self.total_in, consumed)
@@ -346,6 +364,33 @@ fn Session::code(
     }
     None => ()
   }
+  match self.feed_encoder(input, action is Finish) {
+    Some(produced_bytes) => {
+      append_pending(self.pending, produced_bytes)
+      if action is Finish {
+        self.complete = true
+        self.finished = true
+      }
+      let (produced, new_pos) = drain_pending(
+        self.pending,
+        self.pending_pos,
+        output,
+      )
+      self.pending_pos = new_pos
+      self.total_out = add_count(self.total_out, produced)
+      let status = pending_status(
+        self.complete,
+        self.pending_pos,
+        self.pending.length(),
+        output,
+      )
+      return { consumed, produced, status, }
+    }
+    None => ()
+  }
+  for b in input {
+    self.input.push(b)
+  }
   if action is Run &&
     run_can_finish &&
     self.complete == false &&
@@ -387,6 +432,72 @@ fn Session::code(
     output,
   )
   { consumed, produced, status, }
+}
+
+///|
+/// Feed the active encoder stream (if any) with any bytes buffered by `write`
+/// plus the fresh `input`, and return the bytes produced. `None` when this
+/// session has no incremental encoder.
+fn Session::feed_encoder(
+  self : Session,
+  input : BytesView,
+  finish : Bool,
+) -> Bytes? raise LzmaError {
+  let has = match self.lzma_encoder {
+    Some(_) => true
+    None =>
+      match self.lzma2_encoder {
+        Some(_) => true
+        None =>
+          match self.xz_encoder {
+            Some(_) => true
+            None => false
+          }
+      }
+  }
+  if has == false {
+    return None
+  }
+  let src = Array(capacity=self.input.length() + input.length())
+  for b in self.input[:] {
+    src.push(b)
+  }
+  self.input.clear()
+  for b in input {
+    src.push(b)
+  }
+  let view = Bytes::from_array(src[:])
+  let produced = match self.lzma_encoder {
+    Some(encoder) =>
+      encoder.feed(view[:], finish) catch {
+        @coder.Eof => raise UnexpectedEof
+        @coder.Data => raise DataError
+        @coder.Limit => raise MemoryLimit
+        @coder.Unsupported => raise UnsupportedFeature("lzma feature")
+      }
+    None =>
+      match self.lzma2_encoder {
+        Some(encoder) =>
+          encoder.feed(view[:], finish) catch {
+            @coder.Eof => raise UnexpectedEof
+            @coder.Data => raise DataError
+            @coder.Limit => raise MemoryLimit
+            @coder.Unsupported => raise UnsupportedFeature("lzma2 feature")
+          }
+        None =>
+          match self.xz_encoder {
+            Some(encoder) =>
+              encoder.feed(view[:], finish) catch {
+                @coder.Eof => raise UnexpectedEof
+                @coder.Data => raise DataError
+                @coder.Limit => raise MemoryLimit
+                @coder.Unsupported => raise UnsupportedFeature("xz feature")
+              }
+            None => b""
+          }
+      }
+  }
+  Some(produced)
 }
 
 ///|
@@ -433,7 +544,56 @@ pub fn Encoder::new(
   options? : EncodeOptions = EncodeOptions::default(),
 ) -> Encoder raise LzmaError {
   options.validate()
-  { options, session: Session::fresh(), }
+  let props = options.resolved_props()
+  let plain = options.filters.length() == 0
+  let lzma_encoder : @lzma.StreamEncoder? = if plain &&
+    options.format == Format::Lzma {
+    Some(
+      @lzma.StreamEncoder::new(props.lc, props.lp, props.pb, props.dict_size),
+    )
+  } else {
+    None
+  }
+  let lzma2_encoder : @lzma2.StreamEncoder? = if plain &&
+    options.format == Format::Lzma2 {
+    Some(
+      @lzma2.StreamEncoder::new(props.lc, props.lp, props.pb, props.dict_size),
+    )
+  } else {
+    None
+  }
+  let xz_encoder : @xz.StreamEncoder? = if plain && options.format == Format::Xz {
+    let check_id = match options.check {
+      None => 0
+      Crc32 => 1
+      Crc64 => 4
+      Sha256 => raise UnsupportedFeature("SHA-256 check")
+    }
+    Some(
+      @xz.StreamEncoder::new(
+        props.lc,
+        props.lp,
+        props.pb,
+        props.dict_size,
+        check_id,
+      ) catch {
+        @coder.Unsupported => raise UnsupportedFeature("xz check")
+        err =>
+          raise match err {
+            @coder.Eof => UnexpectedEof
+            @coder.Data => DataError
+            @coder.Limit => MemoryLimit
+            @coder.Unsupported => UnsupportedFeature("xz check")
+          }
+      },
+    )
+  } else {
+    None
+  }
+  {
+    options,
+    session: Session::fresh(lzma_encoder~, lzma2_encoder~, xz_encoder~),
+  }
 }
 
 ///|
@@ -560,7 +720,35 @@ pub fn Encoder::write(
 ///|
 pub fn Encoder::finish(self : Encoder) -> Bytes raise LzmaError {
   let options = self.options
-  self.session.finish_now((src : Bytes) => encode(src[:], options~), "encoder")
+  if self.session.complete &&
+    self.session.pending_pos >= self.session.pending.length() {
+    raise InvalidConfiguration("encoder already finished")
+  }
+  match self.session.feed_encoder(b""[:], true) {
+    Some(produced) => {
+      let head = pending_rest(self.session.pending, self.session.pending_pos)
+      let session = self.session
+      session.pending.clear()
+      session.pending_pos = 0
+      session.complete = true
+      session.finished = true
+      let arr = Array(capacity=head.length() + produced.length())
+      for b in head[:] {
+        arr.push(b)
+      }
+      for b in produced[:] {
+        arr.push(b)
+      }
+      let out = Bytes::from_array(arr[:])
+      session.total_out = add_count(session.total_out, out.length())
+      out
+    }
+    None =>
+      self.session.finish_now(
+        (src : Bytes) => encode(src[:], options~),
+        "encoder",
+      )
+  }
 }
 
 ///|

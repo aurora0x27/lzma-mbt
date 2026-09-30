@@ -126,7 +126,7 @@ pub(all) enum Check {
 } derive(Debug, Eq)
 
 pub(all) enum Action {
-  /// 追加输入。解码器在完整流可验证时可以提前产生输出；编码器在 `Finish` 前仍缓冲输入。
+  /// 追加输入。解码器在完整流可验证时可以提前产生输出；编码器对 `Lzma`/`Lzma2`/`Xz`（无根级额外 filters）可提前产出码流。
   Run
   /// 不支持：`code` 在消费输入/写输出之前抛 `InvalidConfiguration`，绝不按 `Run` 处理。
   SyncFlush
@@ -327,7 +327,8 @@ C API 用 `next_in`/`avail_in` 指针对，是因为 C 没有切片。MoonBit �
 ### 类型
 
 ```moonbit
-/// 编码器。`Finish` 前缓冲输入，在 `Finish`（或可完成的 `Run`）时调用与一次性 API 相同的 `encode`。
+/// 增量编码器。`Format::Lzma` / `Lzma2` / `Xz`（无根级额外 filters）在 `code(..., Run)` 时按内部状态产出码流；
+/// 带根级额外 filters 的输入仍缓冲到 `Finish` 再一次性 `encode`。
 pub type Encoder
 
 /// 增量解码器。`Format::Lzma` / `Lzma2` / `Xz`（无根级额外 filters、非 concatenated）在 `code(..., Run)`
@@ -406,7 +407,8 @@ pub fn Decoder::finish(self : Decoder) -> Bytes raise LzmaError
 
 - `Decoder::code(..., Run)`：`.lzma`、裸 LZMA2、单 Stream `.xz`（无根级额外 filters、非 concatenated）走同一套增量状态机（LZMA 符号级；`.xz` 还解析 Header/Block/Index/Footer 边界），在输入不足时返回 `NeedInput`，在输出槽满时返回 `NeedOutput`。
 - `Decoder::write` + `finish`：仍是整段缓冲的兼容外壳，`finish` 调用一次性 `decode`；结果与按任意 chunk 调 `code(..., Run)` 再 `Finish` 相同。
-- `Encoder` 与带根级额外 filters / `Format::Auto` / `concatenated=true` 的输入仍缓冲到 `Finish`。
+- `Encoder::code(..., Run)`：`Format::Lzma` / `Lzma2` / `Xz`（无根级额外 filters）走同一套增量状态机——LZMA 符号级编码 + LZMA2 64 KiB chunk；`.xz` 立即写 Stream/Block Header，`Finish` 时写 Index/Footer。输入不足时 `NeedInput`，输出槽满时 `NeedOutput`。流式 `.xz` Block Header 不写压缩/未压缩大小；流式 `.lzma` 写未知大小标记（`0xFF..FF`）并以 end marker 收尾（一次性 `.lzma` 仍写真实大小）。
+- 带根级额外 filters 的输入仍缓冲到 `Finish`。
 
 `write` 与 `code` 的 `input` 都会追加到内部缓冲，不要把同一段数据喂两次。
 

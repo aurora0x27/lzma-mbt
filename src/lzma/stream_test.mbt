@@ -136,3 +136,11 @@ test "lzma_stream_extra_after_end_is_data" {
   let err = @test.expect_error(() => dec.feed(b"\x00"[:]) |> ignore)
   assert_true(err is @coder.Data)
 }
+
+///|
+test "lzma_stream_encoder_roundtrip" {
+  let e = StreamEncoder::new(3, 0, 2, 4096U)
+  let out = e.feed(b"hello"[:], true)
+  let back = decode_alone(out[:], 128UL * 1024UL * 1024UL)
+  assert_eq(back, b"hello")
+}

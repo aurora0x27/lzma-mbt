@@ -32,7 +32,7 @@ pub struct RangeEncoder {
   mut range : UInt
   mut cache : UInt
   mut cache_size : UInt64
-  out : @bit.Writer
+  mut out : @bit.Writer
 }
 
 ///|
@@ -119,6 +119,16 @@ pub fn RangeEncoder::flush(self : RangeEncoder) -> Bytes {
     self.shift_low()
   }
   self.out.to_bytes()
+}
+
+///|
+/// Take the bytes finalized so far without flushing the coder. The remaining
+/// `low` / `cache` state stays live, so a streaming encoder can emit a prefix
+/// and keep encoding.
+pub fn RangeEncoder::drain(self : RangeEncoder) -> Bytes {
+  let b = self.out.to_bytes()
+  self.out = @bit.Writer::new()
+  b
 }
 
 ///|

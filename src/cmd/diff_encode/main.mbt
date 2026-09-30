@@ -298,6 +298,66 @@ fn emit_xz_bcj_case(
 }
 
 ///|
+/// Encode via the incremental `Encoder::code(..., Run)` path (1-byte output
+/// slots, draining `NeedOutput`) and emit the result for the reference
+/// decoder, proving streaming output is a valid Stream.
+fn emit_stream_case(
+  name : String,
+  payload : Bytes,
+  format : @lzma.Format,
+  preset : Int,
+  check : @lzma.Check,
+) -> Unit raise @lzma.LzmaError {
+  let options : @lzma.EncodeOptions = {
+    format,
+    preset: { level: preset, extreme: false, },
+    check,
+    props: None,
+    filters: [],
+  }
+  let props = options.resolved_props()
+  let enc = @lzma.Encoder::new(options~)
+  let arr = Array()
+  let mut pos = 0
+  while pos < payload.length() {
+    let n = if payload.length() - pos > 4096 {
+      4096
+    } else {
+      payload.length() - pos
+    }
+    let out = @lzma.OutputBuf::new(size=1)
+    let r = enc.code(payload[pos:pos + n], out, @lzma.Action::Run)
+    for b in out.written()[:] {
+      arr.push(b)
+    }
+    let mut draining = r.status is @lzma.NeedOutput
+    while draining {
+      let tail = @lzma.OutputBuf::new(size=1)
+      let more = enc.code(b""[:], tail, @lzma.Action::Run)
+      for b in tail.written()[:] {
+        arr.push(b)
+      }
+      draining = more.status is @lzma.NeedOutput
+    }
+    pos = pos + n
+  }
+  let rest = enc.finish()
+  for b in rest[:] {
+    arr.push(b)
+  }
+  let encoded = Bytes::from_array(arr[:])
+  println("CASE \{name}")
+  println("format=\{format_name(format)}")
+  println("preset=\{preset}")
+  println("check=\{check_name(check)}")
+  println("dict=\{props.dict_size}")
+  println("plain_len=\{payload.length()}")
+  println("plain_hex=\{to_hex(payload)}")
+  println("comp_hex=\{to_hex(encoded)}")
+  println("END")
+}
+
+///|
 fn main {
   println("LZMA_MBT_DIFF_V1")
   try {
@@ -422,6 +482,13 @@ fn main {
       6,
       @lzma.Check::Crc64,
       "sparc",
+    )
+    emit_stream_case(
+      "stream_xz_p6_crc64",
+      mixed_bytes(3000),
+      @lzma.Format::Xz,
+      6,
+      @lzma.Check::Crc64,
     )
     emit_case(
       "empty_xz_p6_crc32",

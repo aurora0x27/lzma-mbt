@@ -3,6 +3,7 @@ package "aurora0x27/lzma-mbt/lzma2"
 
 import {
   "aurora0x27/lzma-mbt/internal/coder",
+  "aurora0x27/lzma-mbt/internal/range_coder",
 }
 
 // Values
@@ -26,11 +27,33 @@ pub struct StreamDecoder {
   mut need_dict_reset : Bool
   mut need_props : Bool
   mut ended : Bool
+  payload_prefix : Array[Byte]
+  mut payload_range : @range_coder.RangeDecoder?
+  mut payload_remaining : Int
+  mut payload_goal : UInt64
+  mut payload_output_done : Bool
 }
 pub fn StreamDecoder::feed(Self, BytesView) -> (Bytes, Bool) raise @coder.CoderError
 pub fn StreamDecoder::finish(Self) -> Bytes raise @coder.CoderError
 pub fn StreamDecoder::new(UInt64, dict_size? : UInt) -> Self raise @coder.CoderError
 pub fn StreamDecoder::reset(Self) -> Unit
+
+pub struct StreamEncoder {
+  mut enc : @coder.LzmaEnc
+  mut window : Array[Byte]
+  mut start : Int
+  lc : Int
+  lp : Int
+  pb : Int
+  dict_size : UInt
+  mut need_dict_reset : Bool
+  mut need_props : Bool
+  mut ended : Bool
+}
+pub fn StreamEncoder::feed(Self, BytesView, Bool) -> Bytes raise @coder.CoderError
+pub fn StreamEncoder::finish(Self) -> Bytes raise @coder.CoderError
+pub fn StreamEncoder::new(Int, Int, Int, UInt) -> Self
+pub fn StreamEncoder::reset(Self) -> Unit
 
 // Type aliases
 

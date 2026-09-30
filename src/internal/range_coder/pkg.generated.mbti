@@ -26,24 +26,35 @@ pub suberror RcError {
 } derive(Eq, @debug.Debug)
 
 // Types and methods
+pub struct RangeCheckpoint {
+  range : UInt
+  code : UInt
+  pos : Int
+}
+
 pub struct RangeDecoder {
   mut range : UInt
   mut code : UInt
   mut pos : Int
-  data : BytesView
+  data : Array[Byte]
 }
+pub fn RangeDecoder::append(Self, BytesView) -> Unit
+pub fn RangeDecoder::checkpoint(Self) -> RangeCheckpoint
 pub fn RangeDecoder::clone(Self) -> Self
 pub fn RangeDecoder::decode_bit(Self, Array[UInt], Int) -> Int raise RcError
 pub fn RangeDecoder::decode_direct_bits(Self, Int) -> UInt raise RcError
 pub fn RangeDecoder::new(BytesView) -> Self raise RcError
+pub fn RangeDecoder::remaining(Self) -> Int
+pub fn RangeDecoder::restore(Self, RangeCheckpoint) -> Unit
 
 pub struct RangeEncoder {
   mut low : UInt64
   mut range : UInt
   mut cache : UInt
   mut cache_size : UInt64
-  out : @bit.Writer
+  mut out : @bit.Writer
 }
+pub fn RangeEncoder::drain(Self) -> Bytes
 pub fn RangeEncoder::encode_bit(Self, Array[UInt], Int, Int) -> Unit
 pub fn RangeEncoder::encode_direct_bits(Self, UInt, Int) -> Unit
 pub fn RangeEncoder::flush(Self) -> Bytes
