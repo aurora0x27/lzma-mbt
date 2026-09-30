@@ -1784,3 +1784,71 @@ test "run_drains_after_need_output" {
   })
   assert_eq(back, src)
 }
+
+///|
+test "decoder_code_lzma_one_byte_run" {
+  let src = b"lzma code run chunks"
+  let enc = encode(src[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma,
+  })
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    format: Format::Lzma,
+  })
+  let slot = Array::make(1, b'\x00')
+  let out : OutputBuf = { data: slot, start: 0, }
+  let collected = Array()
+  let mut i = 0
+  let mut done = false
+  while i < enc.length() {
+    let step = dec.code(enc[i:i + 1], out, Action::Run)
+    assert_eq(step.consumed, 1)
+    if step.status is StreamEnd {
+      done = true
+    }
+    i = i + 1
+    if out.start > 0 {
+      collected.push(slot[0])
+      out.start = 0
+    }
+    let mut draining = done == false
+    while draining {
+      let d = dec.code(b""[:], out, Action::Run)
+      if d.produced > 0 {
+        collected.push(slot[0])
+        out.start = 0
+      }
+      if d.status is StreamEnd {
+        done = true
+        draining = false
+      } else if d.produced == 0 {
+        draining = false
+      }
+    }
+  }
+  if done == false {
+    let rest = dec.finish()
+    for b in rest[:] {
+      collected.push(b)
+    }
+  }
+  assert_eq(Bytes::from_array(collected[:]), src)
+}
+
+///|
+test "decoder_code_lzma_over_64k" {
+  let src = Bytes::make(70000, b'\x21')
+  let enc = encode(src[:], options={
+    ..EncodeOptions::default(),
+    format: Format::Lzma,
+  })
+  let dec = Decoder::new(options={
+    ..DecodeOptions::default(),
+    format: Format::Lzma,
+  })
+  let out = OutputBuf::new(size=70000)
+  let r = dec.code(enc[:], out, Action::Finish)
+  assert_eq(r.status, StreamEnd)
+  assert_eq(out.written(), src)
+}

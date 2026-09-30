@@ -50,12 +50,13 @@ python3 scripts/diff_encode.py
 | XZ 容器内 ARM-Thumb BCJ | `bcj_armthumb` 镜像 `simple/armthumb.c`；`xz --armthumb` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x08` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM-Thumb-BCJ+LZMA2；ARM-Thumb 属性非空 / 作为最后一条 → `Data` |
 | XZ 容器内 ARM64 BCJ | `bcj_arm64` 与 `lzma_bcj_arm64_*` 字节一致（BL/ADRP 向量）；`xz --arm64` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x0A` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM64-BCJ+LZMA2；ARM64 属性非空 / ARM64 作为最后一条 → `Data` |
 | XZ 容器内 ARM BCJ | `bcj_arm` 镜像 `simple/arm.c`；`xz --arm` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x07` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 ARM-BCJ+LZMA2；ARM 属性非空 / ARM 作为最后一条 → `Data`；多前置过滤器同给 → `Data` |
+| `.lzma` 增量解码 | 1 字节与固定种子随机 chunk 与一次性 `decode` 明文一致；13 字节 header 逐字节/逐长度切开；unknown size（`0xFF..FF`）靠 end marker 收尾；截断 header → `Eof`；非法属性 → `Data`；memlimit 过小 → `Limit`；`StreamEnd` 后再喂输入 → `Data` |
 | XZ 容器内 SPARC BCJ | `bcj_sparc` 镜像 `simple/sparc.c`；`xz --sparc` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x09` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 SPARC-BCJ+LZMA2；属性非空 / 作为最后一条 → `Data` |
 | XZ 容器内 x86 BCJ | `bcj_x86` 与 `lzma_bcj_x86_*` 字节一致（overlap / prev_mask 向量）；`xz --x86` 参考 `.xz` 能解；自编码 round-trip（Header 记录 `0x04` 无属性）；StreamDecoder 整块路径 chunk 喂入一致；编码差分含 x86-BCJ+LZMA2；x86 属性非空 / x86 作为最后一条 → `Data`，未知 prefilter / 三过滤器链 → `Unsupported` |
 
 ## T7 — 真正增量的流式状态机
 
-当前已完成 T7a 的 API 契约、`NeedInput`/`NeedOutput`、随机分块回归，T7b 的裸 LZMA2 控制头/完整 chunk 状态机，T7c 的 LZMA 符号级 active payload，以及 T7d 的单 Stream XZ Header、Block、payload、Index/Footer 增量状态。声明压缩大小的 XZ Block 会复用 active LZMA2 解码器并在 Footer 前产生明文；`concatenated=true`、无压缩大小字段的 Block 和带根级额外 filters 的 XZ 保持兼容路径。`.lzma` 容器的增量头部与 payload 仍需后续架构工作，故 T7d 已完成而整体流式容器支持仍未完成。
+当前已完成 T7a 的 API 契约、`NeedInput`/`NeedOutput`、随机分块回归，T7b 的裸 LZMA2 控制头/完整 chunk 状态机，T7c 的 LZMA 符号级 active payload，T7d 的单 Stream XZ Header、Block、payload、Index/Footer 增量状态，以及 `.lzma` 的增量头部与符号级 payload（声明大小时仍要求并校验 end marker）。声明压缩大小的 XZ Block 会复用 active LZMA2 解码器并在 Footer 前产生明文；`concatenated=true`、无压缩大小字段的 Block 和带根级额外 filters 的 XZ 保持兼容路径。三种容器的 `Decoder::code(..., Run)` 已真正增量；剩余为 `Encoder` 的增量输出与 `SyncFlush`/`FullFlush` 语义。
 
 **问题**：`Encoder`/`Decoder` 在 `Finish` 前缓冲全部输入，再调用一次性 `encode`/`decode`。`Run` 不产生输出；`NeedInput` 不会发出；`SyncFlush`/`FullFlush` 被拒绝。这不是 liblzma 的增量语义。
 

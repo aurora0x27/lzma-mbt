@@ -55,6 +55,7 @@ priv struct Session {
   input : Array[Byte]
   pending : Array[Byte]
   stream_decoder : @lzma2.StreamDecoder?
+  lzma_decoder : @lzma.StreamDecoder?
   xz_decoder : @xz.StreamDecoder?
   mut pending_pos : Int
   mut finished : Bool
@@ -78,12 +79,14 @@ struct Decoder {
 ///|
 fn Session::fresh(
   stream_decoder? : @lzma2.StreamDecoder? = None,
+  lzma_decoder? : @lzma.StreamDecoder? = None,
   xz_decoder? : @xz.StreamDecoder? = None,
 ) -> Session {
   {
     input: [],
     pending: [],
     stream_decoder,
+    lzma_decoder,
     xz_decoder,
     pending_pos: 0,
     finished: false,
@@ -103,6 +106,10 @@ fn Session::clear(self : Session) -> Unit {
   self.total_in = 0UL
   self.total_out = 0UL
   match self.stream_decoder {
+    None => ()
+    Some(dec) => dec.reset()
+  }
+  match self.lzma_decoder {
     None => ()
     Some(dec) => dec.reset()
   }
@@ -241,6 +248,44 @@ fn Session::code(
           @coder.Data => raise DataError
           @coder.Limit => raise MemoryLimit
           @coder.Unsupported => raise UnsupportedFeature("lzma2 feature")
+        }
+        done = true
+      }
+      self.complete = done
+      self.finished = done
+      let (produced, new_pos) = drain_pending(
+        self.pending,
+        self.pending_pos,
+        output,
+      )
+      self.pending_pos = new_pos
+      self.total_out = add_count(self.total_out, produced)
+      let status = pending_status(
+        self.complete,
+        self.pending_pos,
+        self.pending.length(),
+        output,
+      )
+      return { consumed, produced, status, }
+    }
+    None => ()
+  }
+  match self.lzma_decoder {
+    Some(decoder) => {
+      let (produced_bytes, done0) = decoder.feed(input) catch {
+        @coder.Eof => raise UnexpectedEof
+        @coder.Data => raise DataError
+        @coder.Limit => raise MemoryLimit
+        @coder.Unsupported => raise UnsupportedFeature("lzma feature")
+      }
+      let mut done = done0
+      append_pending(self.pending, produced_bytes)
+      if action is Finish && done == false {
+        let _ = decoder.finish() catch {
+          @coder.Eof => raise UnexpectedEof
+          @coder.Data => raise DataError
+          @coder.Limit => raise MemoryLimit
+          @coder.Unsupported => raise UnsupportedFeature("lzma feature")
         }
         done = true
       }
@@ -413,6 +458,12 @@ pub fn Decoder::new(
     }
     Auto | Lzma | Xz => None
   }
+  let lzma_decoder : @lzma.StreamDecoder? = if options.format == Format::Lzma &&
+    options.filters.length() == 0 {
+    Some(@lzma.StreamDecoder::new(effective_memlimit(options.memlimit)))
+  } else {
+    None
+  }
   let xz_decoder : @xz.StreamDecoder? = if options.format == Format::Xz &&
     options.concatenated == false &&
     options.filters.length() == 0 {
@@ -425,7 +476,10 @@ pub fn Decoder::new(
   } else {
     None
   }
-  { options, session: Session::fresh(stream_decoder~, xz_decoder~), }
+  {
+    options,
+    session: Session::fresh(stream_decoder~, lzma_decoder~, xz_decoder~),
+  }
 }
 
 ///|

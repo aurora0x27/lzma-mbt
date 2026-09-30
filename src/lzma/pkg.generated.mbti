@@ -3,6 +3,7 @@ package "aurora0x27/lzma-mbt/lzma"
 
 import {
   "aurora0x27/lzma-mbt/internal/coder",
+  "aurora0x27/lzma-mbt/internal/range_coder",
 }
 
 // Values
@@ -13,6 +14,23 @@ pub fn encode_alone(BytesView, Int, Int, Int, UInt) -> Bytes
 // Errors
 
 // Types and methods
+pub struct StreamDecoder {
+  mut buf : Array[Byte]
+  mut pos : Int
+  mut header_done : Bool
+  mut dec : @coder.LzmaDec
+  mut known : Bool
+  mut expected : UInt64
+  memlimit : UInt64
+  mut ended : Bool
+  prefix : Array[Byte]
+  mut range : @range_coder.RangeDecoder?
+}
+pub fn StreamDecoder::feed(Self, BytesView) -> (Bytes, Bool) raise @coder.CoderError
+pub fn StreamDecoder::finish(Self) -> Bytes raise @coder.CoderError
+pub fn StreamDecoder::new(UInt64) -> Self
+pub fn StreamDecoder::parse_header(Self) -> Unit raise @coder.CoderError
+pub fn StreamDecoder::reset(Self) -> Unit
 
 // Type aliases
 

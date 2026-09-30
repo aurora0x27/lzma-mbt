@@ -327,10 +327,12 @@ C API 用 `next_in`/`avail_in` 指针对，是因为 C 没有切片。MoonBit �
 ### 类型
 
 ```moonbit
-/// 增量编码器。`Finish` 前缓冲输入；`Finish` 时调用与一次性 API 相同的 `encode`。
+/// 编码器。`Finish` 前缓冲输入，在 `Finish`（或可完成的 `Run`）时调用与一次性 API 相同的 `encode`。
 pub type Encoder
 
-/// 增量解码器。`Finish` 前缓冲输入；`Finish` 时调用与一次性 API 相同的 `decode`。
+/// 增量解码器。`Format::Lzma` / `Lzma2` / `Xz`（无根级额外 filters、非 concatenated）在 `code(..., Run)`
+/// 时按内部状态逐步产出明文；`Format::Auto`、带根级额外 filters 的输入、`concatenated=true` 的 `.xz`
+/// 仍走兼容路径（缓冲到 `Finish` 再一次性 `decode`）。
 pub type Decoder
 
 pub(all) struct CodeResult {
@@ -400,7 +402,13 @@ pub fn Decoder::write(self : Decoder, input : BytesView) -> Unit raise LzmaError
 pub fn Decoder::finish(self : Decoder) -> Bytes raise LzmaError
 ```
 
-`write`/`finish` 与 `code` 共用同一 `encode`/`decode`，没有第二套编解码器。流式在 `Finish` 前缓冲全部输入。`write` 与 `code` 的 `input` 都会追加到内部缓冲，不要把同一段数据喂两次。
+`write`/`finish` 与 `code` 共用同一 `encode`/`decode`，没有第二套编解码器。
+
+- `Decoder::code(..., Run)`：`.lzma`、裸 LZMA2、单 Stream `.xz`（无根级额外 filters、非 concatenated）走同一套增量状态机（LZMA 符号级；`.xz` 还解析 Header/Block/Index/Footer 边界），在输入不足时返回 `NeedInput`，在输出槽满时返回 `NeedOutput`。
+- `Decoder::write` + `finish`：仍是整段缓冲的兼容外壳，`finish` 调用一次性 `decode`；结果与按任意 chunk 调 `code(..., Run)` 再 `Finish` 相同。
+- `Encoder` 与带根级额外 filters / `Format::Auto` / `concatenated=true` 的输入仍缓冲到 `Finish`。
+
+`write` 与 `code` 的 `input` 都会追加到内部缓冲，不要把同一段数据喂两次。
 
 `code(..., Finish)` 若因输出槽不足返回 `NeedOutput`，可继续 `code` 排空，或调用 `finish()` 取走剩余未写出字节。已经 `StreamEnd`（或 `finish()` 已返回完整结果）后再 `finish()` → `InvalidConfiguration`。`write` + `finish` 仍是缓冲式兼容外壳。
 
