@@ -1,0 +1,8 @@
+members = [
+  ".",
+  "examples/p1",
+  "examples/p2",
+  "examples/p3",
+  "examples/p4",
+  "examples/p5",
+]

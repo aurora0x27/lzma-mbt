@@ -1,6 +1,6 @@
 # lzma-mbt
 
-MoonBit 实现的 LZMA / LZMA2 / XZ 编解码库，目标对齐 `liblzma` 的外部可观察行为（格式、校验、错误语义），而不是翻译 C 代码。
+MoonBit 实现的 LZMA / LZMA2 / XZ 编解码库，目标对齐 `liblzma` 的外部可观察行为。
 
 模块名：`aurora0x27/lzma-mbt`。开发约定见 [AGENTS.md](./AGENTS.md)，分层与接口见 [docs/](./docs/)。
 
@@ -45,13 +45,30 @@ let enc = @lzma.encode(src[:], options={
 })
 ```
 
-## 构建
+## 示例
 
-需要 MoonBit toolchain（本仓库 CI 使用 `chawyehsu/setup-moonup@v1`，版本号见仓库根 `moonbit-version`）。**强制工具链版本 `moon 0.1.20260904`**（内置 core `0.10.12+1634b282e`，对应 moonup 发行标识 `0.10.12+1634b282e`），见 `docs/research/toolchain.md`；用其它版本时不要静默适配，先停下来确认。编码差分还需要 Python 3（标准库 `lzma`）以及 `xz`。
+可运行示例在 [examples/](./examples/)，覆盖典型输入类型：
 
 ```text
-moon check --deny-warn
-moon fmt --check
-moon test --deny-warn
-python3 scripts/diff_encode.py
+make examples          # 准备 fixtures 并运行 p1..p5
+moon run examples/p1   # 小文字
+moon run examples/p2   # 大段文字
+moon run examples/p3   # 系统日志
+moon run examples/p4   # 小图片
+moon run examples/p5   # 大图片（需 examples/fixtures/large.png）
+```
+
+## 构建
+
+需要 MoonBit toolchain（本仓库 CI 使用 `chawyehsu/setup-moonup@v1`，版本号见仓库根 `moonbit-version`）。**强制工具链版本 `moon 0.1.20260904`**（内置 core `0.10.12+1634b282e`，对应 moonup 发行标识 `0.10.12+1634b282e`），见 `docs/research/toolchain.md`。
+
+常用入口：
+
+```text
+make check       # moon check --deny-warn
+make fmt-check   # moon fmt --check
+make test        # moon test --deny-warn
+make diff        # python3 scripts/diff_encode.py
+make examples    # 运行 examples/p1..p5（典型输入）
+make ci          # check + fmt-check + test + diff
 ```

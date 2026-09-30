@@ -5,3 +5,13 @@ target
 .mooncakes/
 .moonagent/
 _moon_sample/
+
+# example runtime outputs
+examples/p1/out/
+examples/p2/out/
+examples/p3/out/
+examples/p4/out/
+examples/p5/out/
+
+# large image fixture (prepared locally; not committed)
+examples/fixtures/large.png

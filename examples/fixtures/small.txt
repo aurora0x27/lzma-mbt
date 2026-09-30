@@ -1,0 +1,2 @@
+lzma-mbt demo: small text
+短文本压缩示例 — hello, 世界.
